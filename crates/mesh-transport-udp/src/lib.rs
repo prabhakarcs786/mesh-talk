@@ -8,15 +8,20 @@
 //! relay through the nodes in between, courtesy of `mesh_core::node::MeshNode`'s flood
 //! routing.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use mesh_core::Transport;
 use tokio::net::UdpSocket;
+use tokio::sync::Mutex;
+
+pub mod discovery;
+pub use discovery::{DiscoveredPeer, LanDiscovery};
 
 pub struct UdpTransport {
     socket: Arc<UdpSocket>,
-    peer_addrs: Vec<String>,
+    peer_addrs: Mutex<HashSet<String>>,
 }
 
 impl UdpTransport {
@@ -24,12 +29,19 @@ impl UdpTransport {
         let socket = UdpSocket::bind(listen_addr).await?;
         Ok(Self {
             socket: Arc::new(socket),
-            peer_addrs,
+            peer_addrs: Mutex::new(peer_addrs.into_iter().collect()),
         })
     }
 
     pub fn local_addr(&self) -> anyhow::Result<std::net::SocketAddr> {
         Ok(self.socket.local_addr()?)
+    }
+
+    /// Adds a directly-reachable peer discovered at runtime (e.g. via LAN discovery),
+    /// instead of requiring it to be known upfront at `bind()` time. No-op if already
+    /// present.
+    pub async fn add_peer(&self, addr: String) {
+        self.peer_addrs.lock().await.insert(addr);
     }
 }
 
@@ -48,6 +60,13 @@ impl Transport for UdpTransport {
     }
 
     fn peers(&self) -> Vec<String> {
-        self.peer_addrs.clone()
+        // `Transport::peers` is synchronous; try_lock is fine here since flooding just
+        // re-broadcasts on every new message anyway, so a momentarily stale/empty list
+        // under contention isn't a correctness problem.
+        self.peer_addrs
+            .try_lock()
+            .map(|p| p.iter().cloned().collect())
+            .unwrap_or_default()
     }
 }
+

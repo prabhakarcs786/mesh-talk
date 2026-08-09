@@ -7,6 +7,10 @@ license = "MIT"
 
 [dependencies]
 mesh-core = { path = "../mesh-core" }
-tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync", "time"] }
 async-trait = "0.1"
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+blake3 = "1"
+socket2 = { version = "0.5", features = ["all"] }

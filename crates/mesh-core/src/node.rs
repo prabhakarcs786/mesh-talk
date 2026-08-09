@@ -37,6 +37,13 @@ impl<T: Transport> MeshNode<T> {
         self.identity.node_id()
     }
 
+    /// Access to the underlying transport, e.g. so callers can add newly-discovered
+    /// peers at runtime (`Transport` impls that support it, like `UdpTransport`, expose
+    /// their own methods for this -- `MeshNode` itself stays transport-agnostic).
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
     /// Block until the next raw packet arrives on the underlying transport.
     pub async fn recv_raw(&self) -> anyhow::Result<Vec<u8>> {
         self.transport.recv().await

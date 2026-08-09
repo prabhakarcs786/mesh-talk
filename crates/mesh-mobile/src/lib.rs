@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use mesh_core::{short_id, ChannelKey, Identity, MeshNode};
-use mesh_transport_udp::UdpTransport;
+use mesh_transport_udp::{LanDiscovery, UdpTransport};
 
 uniffi::setup_scaffolding!();
 
@@ -30,6 +30,18 @@ pub struct ReceivedMessage {
     pub text: String,
 }
 
+/// A nearby device found via LAN auto-discovery, ready to connect to with one tap
+/// instead of typing its IP address -- similar to a Bluetooth/Wi-Fi device picker.
+#[derive(uniffi::Record)]
+pub struct DiscoveredPeer {
+    pub node_id: String,
+    pub display_name: String,
+    pub address: String,
+    /// Short numeric code, identical on both devices, so the user can visually confirm
+    /// they're pairing with the right device (Bluetooth-style numeric comparison).
+    pub pairing_code: String,
+}
+
 /// A running mesh node. Construct one per app session; keep it alive for as long as the
 /// app wants to stay part of the mesh (e.g. behind a singleton or view-model on the
 /// Swift/Kotlin side).
@@ -38,8 +50,10 @@ pub struct MeshClient {
     runtime: tokio::runtime::Runtime,
     node: Arc<MeshNode<UdpTransport>>,
     inbox: Arc<Mutex<VecDeque<ReceivedMessage>>>,
+    discovery: Mutex<Option<LanDiscovery>>,
     display_name: String,
-    node_id: String,
+    node_id: mesh_core::NodeId,
+    node_id_str: String,
 }
 
 const INBOX_CAPACITY: usize = 500;
@@ -76,6 +90,7 @@ impl MeshClient {
             .block_on(UdpTransport::bind(&listen_addr, peer_addrs))
             .map_err(|e| MeshError::Network(e.to_string()))?;
 
+        let raw_node_id = identity.node_id();
         let node = Arc::new(MeshNode::new(identity, channel_key, transport, ttl));
         let inbox: Arc<Mutex<VecDeque<ReceivedMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
 
@@ -105,14 +120,16 @@ impl MeshClient {
             runtime,
             node,
             inbox,
+            discovery: Mutex::new(None),
             display_name,
-            node_id,
+            node_id: raw_node_id,
+            node_id_str: node_id,
         }))
     }
 
     /// This device's short node id (derived from its public key).
     pub fn node_id(&self) -> String {
-        self.node_id.clone()
+        self.node_id_str.clone()
     }
 
     /// Encrypts, signs and floods a message onto the mesh. Returns `false` if it could
@@ -130,4 +147,53 @@ impl MeshClient {
     pub fn poll_message(&self) -> Option<ReceivedMessage> {
         self.inbox.lock().unwrap().pop_front()
     }
+
+    /// Starts broadcasting this device's presence on the local Wi-Fi network and
+    /// listening for others -- like turning on Bluetooth/Wi-Fi discovery, instead of
+    /// requiring the user to type in an IP address. Safe to call more than once (only the
+    /// first call actually starts it).
+    pub fn start_discovery(&self) -> Result<(), MeshError> {
+        let mut discovery = self.discovery.lock().unwrap();
+        if discovery.is_some() {
+            return Ok(()); // already running
+        }
+        let port = self
+            .node
+            .transport()
+            .local_addr()
+            .map_err(|e| MeshError::Network(e.to_string()))?
+            .port();
+        let started = self
+            .runtime
+            .block_on(LanDiscovery::start(self.node_id, self.display_name.clone(), port))
+            .map_err(|e| MeshError::Network(e.to_string()))?;
+        *discovery = Some(started);
+        Ok(())
+    }
+
+    /// Nearby devices found via LAN discovery, ready to connect to with one tap. Call
+    /// `start_discovery()` first; call this from a UI timer/poll loop (e.g. every 1-2s).
+    pub fn discovered_peers(&self) -> Vec<DiscoveredPeer> {
+        let discovery = self.discovery.lock().unwrap();
+        let Some(discovery) = discovery.as_ref() else {
+            return Vec::new();
+        };
+        discovery
+            .discovered_peers()
+            .into_iter()
+            .map(|p| DiscoveredPeer {
+                node_id: short_id(&p.node_id),
+                display_name: p.display_name,
+                address: p.address,
+                pairing_code: p.pairing_code,
+            })
+            .collect()
+    }
+
+    /// Adds a discovered (or manually entered) peer address as a directly-reachable relay
+    /// target, without needing to reconnect/restart the client.
+    pub fn add_peer(&self, address: String) {
+        self.runtime.block_on(self.node.transport().add_peer(address));
+    }
 }
+

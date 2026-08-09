@@ -10,41 +10,64 @@ final class MeshStore: ObservableObject {
     @Published var isConnected = false
     @Published var nodeId: String = ""
     @Published var lastError: String?
+    /// Nearby devices found automatically on the local Wi-Fi network -- like a
+    /// Bluetooth/Wi-Fi device picker, no IP address typing required.
+    @Published var discoveredPeers: [DiscoveredPeer] = []
+    @Published var connectedAddresses: Set<String> = []
 
     private var client: MeshClient?
     private var pollTimer: Timer?
+    private var discoveryTimer: Timer?
 
-    /// Starts (or restarts) a mesh node with the given settings.
-    ///
-    /// - `peerAddrs`: directly-reachable peers on the same Wi-Fi network, e.g.
-    ///   `"192.168.1.42:9001"`. This is today's UDP transport; it will be replaceable with
-    ///   Bluetooth LE auto-discovery once peripheral mode lands (see the repo roadmap).
-    func connect(displayName: String, listenPort: UInt16, peerAddrs: [String], channel: String) {
+    /// Starts a mesh node and immediately starts LAN auto-discovery so nearby devices
+    /// running meshtalk on the same Wi-Fi network show up on their own -- connecting to
+    /// one is then a single tap (`connect(to:)`) instead of typing an IP address.
+    func start(displayName: String, listenPort: UInt16, channel: String) {
         disconnect()
         do {
             let newClient = try MeshClient(
                 displayName: displayName,
                 listenAddr: "0.0.0.0:\(listenPort)",
-                peerAddrs: peerAddrs,
+                peerAddrs: [],
                 channelPassphrase: channel,
                 ttl: 16
             )
+            try newClient.startDiscovery()
             client = newClient
             nodeId = newClient.nodeId()
             isConnected = true
             lastError = nil
             startPolling()
+            startDiscoveryPolling()
         } catch {
             lastError = "\(error)"
             isConnected = false
         }
     }
 
+    /// One-tap connect to a device found via auto-discovery -- no manual IP entry.
+    func connect(to peer: DiscoveredPeer) {
+        client?.addPeer(address: peer.address)
+        connectedAddresses.insert(peer.address)
+    }
+
+    /// Fallback for when auto-discovery doesn't find a peer (e.g. different subnet):
+    /// still supported, just not the primary path anymore.
+    func connectManually(address: String) {
+        guard !address.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        client?.addPeer(address: address)
+        connectedAddresses.insert(address)
+    }
+
     func disconnect() {
         pollTimer?.invalidate()
         pollTimer = nil
+        discoveryTimer?.invalidate()
+        discoveryTimer = nil
         client = nil
         isConnected = false
+        discoveredPeers = []
+        connectedAddresses = []
     }
 
     func send(_ text: String) {
@@ -58,6 +81,17 @@ final class MeshStore: ObservableObject {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             self?.drainInbox()
         }
+    }
+
+    private func startDiscoveryPolling() {
+        discoveryTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            self?.refreshDiscoveredPeers()
+        }
+    }
+
+    private func refreshDiscoveredPeers() {
+        guard let client else { return }
+        discoveredPeers = client.discoveredPeers()
     }
 
     private func drainInbox() {

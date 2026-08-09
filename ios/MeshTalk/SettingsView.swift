@@ -6,7 +6,7 @@ struct SettingsView: View {
     @AppStorage("meshtalk.displayName") private var displayName: String = ""
     @AppStorage("meshtalk.listenPort") private var listenPort: Int = 9001
     @AppStorage("meshtalk.channel") private var channel: String = "mesh-demo"
-    @State private var peerAddrsText: String = ""
+    @State private var manualAddress: String = ""
 
     var body: some View {
         Form {
@@ -19,14 +19,6 @@ struct SettingsView: View {
                 TextField("Channel passphrase", text: $channel)
             }
 
-            Section {
-                TextField("Peer addresses (comma-separated, e.g. 192.168.1.42:9001)", text: $peerAddrsText, axis: .vertical)
-            } header: {
-                Text("Peers")
-            } footer: {
-                Text("Today's transport is Wi-Fi/UDP-based, so list the IP:port of devices on the same network you want to relay with directly. Bluetooth LE auto-discovery (no manual addresses needed) is on the roadmap -- see the repo issue tracker.")
-            }
-
             if let error = store.lastError {
                 Section {
                     Text(error).foregroundStyle(.red)
@@ -34,32 +26,73 @@ struct SettingsView: View {
             }
 
             Section {
-                Button(store.isConnected ? "Reconnect" : "Connect") {
-                    connect()
+                Button(store.isConnected ? "Restart" : "Start") {
+                    store.start(displayName: displayName, listenPort: UInt16(listenPort), channel: channel)
                 }
                 .disabled(displayName.trimmingCharacters(in: .whitespaces).isEmpty)
 
                 if store.isConnected {
-                    Button("Disconnect", role: .destructive) {
+                    Button("Stop", role: .destructive) {
                         store.disconnect()
                     }
+                }
+            }
+
+            if store.isConnected {
+                Section {
+                    if store.discoveredPeers.isEmpty {
+                        HStack {
+                            ProgressView()
+                            Text("Looking for nearby devices...")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ForEach(store.discoveredPeers, id: \.address) { peer in
+                            nearbyPeerRow(peer)
+                        }
+                    }
+                } header: {
+                    Text("Nearby devices")
+                } footer: {
+                    Text("Found automatically on your Wi-Fi network, like Bluetooth pairing -- no IP address needed. Compare the code shown here with the one on the other device before connecting.")
+                }
+
+                Section {
+                    TextField("IP:port (e.g. 192.168.1.42:9001)", text: $manualAddress)
+                    Button("Connect manually") {
+                        store.connectManually(address: manualAddress)
+                        manualAddress = ""
+                    }
+                    .disabled(manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+                } header: {
+                    Text("Advanced")
+                } footer: {
+                    Text("Only needed if a device isn't on the same local network as auto-discovery.")
                 }
             }
         }
         .navigationTitle("Settings")
     }
 
-    private func connect() {
-        let peers = peerAddrsText
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-
-        store.connect(
-            displayName: displayName,
-            listenPort: UInt16(listenPort),
-            peerAddrs: peers,
-            channel: channel
-        )
+    private func nearbyPeerRow(_ peer: DiscoveredPeer) -> some View {
+        let isConnected = store.connectedAddresses.contains(peer.address)
+        return HStack {
+            VStack(alignment: .leading) {
+                Text(peer.displayName).font(.body)
+                Text("code \(peer.pairingCode)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if isConnected {
+                Label("Connected", systemImage: "checkmark.circle.fill")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(.green)
+            } else {
+                Button("Connect") {
+                    store.connect(to: peer)
+                }
+            }
+        }
     }
 }
