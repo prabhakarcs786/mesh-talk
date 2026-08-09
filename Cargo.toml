@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mesh-core",
+    "crates/mesh-transport-udp",
+    "crates/mesh-cli",
+]

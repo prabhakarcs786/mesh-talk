@@ -1,0 +1,17 @@
+[package]
+name = "mesh-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal demo client for the mesh chat engine"
+license = "MIT"
+
+[[bin]]
+name = "mesh-cli"
+path = "src/main.rs"
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+mesh-transport-udp = { path = "../mesh-transport-udp" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"

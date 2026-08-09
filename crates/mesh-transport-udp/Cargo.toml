@@ -1,0 +1,12 @@
+[package]
+name = "mesh-transport-udp"
+version = "0.1.0"
+edition = "2021"
+description = "UDP-based Transport impl for mesh-core, used for local testing without real radio hardware"
+license = "MIT"
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync"] }
+async-trait = "0.1"
+anyhow = "1"

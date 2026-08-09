@@ -1,0 +1,16 @@
+[package]
+name = "mesh-core"
+version = "0.1.0"
+edition = "2021"
+description = "Transport-agnostic offline mesh chat engine: identity, encryption, flood routing with TTL relay"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+chacha20poly1305 = "0.10"
+blake3 = "1"
+rand = "0.8"
+async-trait = "0.1"
+anyhow = "1"
