@@ -4,5 +4,6 @@ members = [
     "crates/mesh-core",
     "crates/mesh-transport-udp",
     "crates/mesh-transport-ble",
+    "crates/mesh-mobile",
     "crates/mesh-cli",
 ]

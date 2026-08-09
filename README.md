@@ -28,6 +28,7 @@ crates/
   mesh-core/           radio-agnostic engine: identity, crypto, routing, message store
   mesh-transport-udp/  Transport impl over UDP (for local dev/testing)
   mesh-transport-ble/  Transport impl over Bluetooth LE (central role only -- see below)
+  mesh-mobile/         UniFFI bindings exposing mesh-core to Swift (iOS) and Kotlin (Android)
   mesh-cli/            terminal demo client
 ```
 
@@ -65,6 +66,32 @@ cargo build --release
 Type a message in alice's terminal and it will show up in carol's terminal, relayed
 through bob, even though alice and carol never talk to each other directly.
 
+## Mobile bindings (Swift / Kotlin)
+
+`mesh-mobile` exposes `mesh-core` to Swift and Kotlin via [UniFFI](https://mozilla.github.io/uniffi-rs/),
+using the UDP transport under the hood today (works over any shared Wi-Fi/hotspot; BLE
+will be swappable in once its peripheral/advertising side lands -- see Roadmap).
+
+Generate the Swift bindings from the compiled library and run the checked-in smoke test
+(spins up two `MeshClient`s and confirms a message relays between them, exactly like the
+CLI demo above but through the Swift API):
+
+```bash
+cargo build -p mesh-mobile
+cargo run -p mesh-mobile --features uniffi-bindgen --bin uniffi-bindgen -- \
+  generate --library target/debug/libmesh_mobile.dylib --language swift --out-dir bindings/swift
+
+cp crates/mesh-mobile/swift-tests/smoke_test.swift /tmp/main.swift
+swiftc \
+  -Xcc -fmodule-map-file="$(pwd)/bindings/swift/mesh_mobileFFI.modulemap" \
+  -I bindings/swift -L target/debug -lmesh_mobile \
+  bindings/swift/mesh_mobile.swift /tmp/main.swift -o /tmp/test_mesh
+DYLD_LIBRARY_PATH=target/debug /tmp/test_mesh
+```
+
+(Swift only allows top-level executable code in a file literally named `main.swift`,
+hence the copy step.) Kotlin bindings work the same way with `--language kotlin`.
+
 ## Roadmap
 
 1. Real short-range radio transports: Bluetooth LE and Wi-Fi Direct (mobile), LoRa
@@ -79,6 +106,12 @@ through bob, even though alice and carol never talk to each other directly.
    application API on Linux). Tracked as follow-up issues per platform.
 2. Mobile app (iOS/Android) via Rust core + FFI bindings (UniFFI), since Xcode/Android
    tooling can call into `mesh-core` directly without rewriting the engine.
+
+   **Status**: `mesh-mobile` UniFFI bindings exist and are verified end-to-end -- a real
+   compiled Swift program (`crates/mesh-mobile/swift-tests/smoke_test.swift`) creates two
+   `MeshClient`s and confirms a message relays between them through the Swift API. Not
+   done yet: an actual iOS/Android app UI, and Kotlin bindings haven't been smoke-tested
+   the same way (should work identically via `--language kotlin`, untested).
 3. Async voice/video "messages" (store-and-forward, like voice notes) — realistic over
    many hops, unlike live calls which need low latency and higher bandwidth.
 4. Live voice calls limited to a small number of hops over Wi-Fi Direct.

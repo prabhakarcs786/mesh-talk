@@ -2,3 +2,7 @@
 **/target
 .DS_Store
 *.log
+
+# UniFFI-generated language bindings (Swift/Kotlin) -- regenerated from the compiled
+# mesh-mobile library, not source of truth.
+/bindings/

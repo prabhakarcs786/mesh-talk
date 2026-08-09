@@ -1,0 +1,28 @@
+[package]
+name = "mesh-mobile"
+version = "0.1.0"
+edition = "2021"
+description = "UniFFI bindings exposing mesh-core to Swift (iOS) and Kotlin (Android)"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+name = "mesh_mobile"
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+mesh-transport-udp = { path = "../mesh-transport-udp" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
+uniffi = "0.28"
+thiserror = "1"
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }
+
+[features]
+uniffi-bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["uniffi-bindgen"]
