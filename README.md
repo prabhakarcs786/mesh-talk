@@ -58,7 +58,7 @@ crates/
 | Core engine (routing, crypto, identity) | Working, try the demo below |
 | Wi-Fi / UDP transport | Working |
 | Bluetooth LE transport | Can scan + connect; can't yet be discovered by others (needs platform-specific work per OS, see [Roadmap](#roadmap)) |
-| iOS app | Builds and genuinely links the engine; not yet run on a simulator/device |
+| iOS app | Runs in the iOS Simulator -- Chat screen verified via screenshot |
 | Android app | Builds and genuinely links the engine; not yet run on an emulator/device |
 | Voice / video | Not started |
 
@@ -137,10 +137,10 @@ xcodebuild -project ios/MeshTalk.xcodeproj -target MeshTalk -sdk iphonesimulator
   ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 ```
 
-**Status**: builds successfully, and the compiled binary genuinely contains
-`mesh-mobile`/`mesh-core` symbols (verified with `nm`) -- it just hasn't been run on a
-simulator/device yet, since that needs an iOS Simulator runtime downloaded via Xcode
-(Settings > Platforms).
+**Status**: builds successfully, and has actually been run in the iOS Simulator (not just
+compiled) -- installed and launched on an iPhone 17 Pro simulator, confirmed via
+screenshot showing the Chat screen rendering correctly with the Rust engine wired up
+underneath.
 
 ## Android app
 

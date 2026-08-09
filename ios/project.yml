@@ -20,6 +20,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.meshtalk.app
         SWIFT_VERSION: 5.0
         TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        SDKROOT: iphoneos
         ENABLE_BITCODE: NO
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
