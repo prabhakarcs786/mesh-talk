@@ -27,6 +27,7 @@ browser client.
 crates/
   mesh-core/           radio-agnostic engine: identity, crypto, routing, message store
   mesh-transport-udp/  Transport impl over UDP (for local dev/testing)
+  mesh-transport-ble/  Transport impl over Bluetooth LE (central role only -- see below)
   mesh-cli/            terminal demo client
 ```
 
@@ -68,6 +69,14 @@ through bob, even though alice and carol never talk to each other directly.
 
 1. Real short-range radio transports: Bluetooth LE and Wi-Fi Direct (mobile), LoRa
    (long-range, low-bandwidth) for text/telemetry.
+
+   **BLE status**: `mesh-transport-ble` implements the central (scan + connect) role via
+   [`btleplug`](https://docs.rs/btleplug), verified against this machine's real Bluetooth
+   adapter (see `crates/mesh-transport-ble/examples/scan_nearby.rs`). `btleplug` has no
+   peripheral/advertising API, though, so a node can't yet make itself discoverable --
+   that half needs native platform code (CoreBluetooth `CBPeripheralManager` on
+   macOS/iOS, `BluetoothGattServer`/`BluetoothLeAdvertiser` on Android, BlueZ's GATT
+   application API on Linux). Tracked as follow-up issues per platform.
 2. Mobile app (iOS/Android) via Rust core + FFI bindings (UniFFI), since Xcode/Android
    tooling can call into `mesh-core` directly without rewriting the engine.
 3. Async voice/video "messages" (store-and-forward, like voice notes) — realistic over

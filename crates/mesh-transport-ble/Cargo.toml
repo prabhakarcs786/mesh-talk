@@ -1,0 +1,15 @@
+[package]
+name = "mesh-transport-ble"
+version = "0.1.0"
+edition = "2021"
+description = "Bluetooth LE Transport impl for mesh-core (central-role scanning/connect today; peripheral/advertising is native-platform work, see README)"
+license = "MIT"
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+async-trait = "0.1"
+anyhow = "1"
+btleplug = "0.12"
+futures = "0.3"
+uuid = "1"
