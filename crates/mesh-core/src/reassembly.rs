@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::payload::{Chunk, ContentKind, ReceivedContent};
+use crate::payload::{Chunk, ContentKind, ReceivedContent, TransferProgress};
 
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_IN_FLIGHT_TRANSFERS: usize = 64;
@@ -20,6 +20,14 @@ struct PartialTransfer {
     last_seen: Instant,
 }
 
+/// What accepting one incoming chunk resulted in: either the transfer it belongs to is
+/// still incomplete (with a progress snapshot the caller can surface to the UI), or this
+/// was the last missing chunk and the whole thing is ready.
+pub enum Accepted {
+    Progress(TransferProgress),
+    Complete(ReceivedContent),
+}
+
 pub struct Reassembler {
     transfers: HashMap<[u8; 16], PartialTransfer>,
 }
@@ -31,12 +39,16 @@ impl Reassembler {
         }
     }
 
-    /// Feed in one chunk. Returns `Some(content)` once every chunk for its transfer has
-    /// arrived; otherwise buffers it and returns `None`.
-    pub fn accept(&mut self, chunk: Chunk) -> Option<ReceivedContent> {
+    /// Feed in one chunk. Returns `Accepted::Complete` once every chunk for its transfer
+    /// has arrived; otherwise buffers it and returns `Accepted::Progress`.
+    pub fn accept(&mut self, chunk: Chunk) -> Accepted {
         self.evict_stale();
 
-        let entry = self.transfers.entry(chunk.transfer_id).or_insert_with(|| {
+        let transfer_id = chunk.transfer_id;
+        let kind = chunk.kind;
+        let total_chunks = chunk.chunk_count;
+
+        let entry = self.transfers.entry(transfer_id).or_insert_with(|| {
             PartialTransfer {
                 chunk_count: chunk.chunk_count,
                 kind: chunk.kind,
@@ -49,21 +61,30 @@ impl Reassembler {
 
         entry.last_seen = Instant::now();
         entry.received.insert(chunk.chunk_index, chunk.data);
+        let done_chunks = entry.received.len() as u32;
 
-        if entry.received.len() as u32 != entry.chunk_count {
-            return None;
+        if done_chunks != entry.chunk_count {
+            return Accepted::Progress(TransferProgress {
+                transfer_id,
+                kind,
+                done_chunks,
+                total_chunks,
+            });
         }
 
         // Complete! Take ownership and remove the bookkeeping entry.
-        let transfer = self.transfers.remove(&chunk.transfer_id)?;
+        let transfer = self.transfers.remove(&transfer_id).expect("just inserted above");
         let mut data = Vec::new();
         for i in 0..transfer.chunk_count {
-            data.extend_from_slice(transfer.received.get(&i)?);
+            if let Some(piece) = transfer.received.get(&i) {
+                data.extend_from_slice(piece);
+            }
         }
 
-        Some(match transfer.kind {
+        Accepted::Complete(match transfer.kind {
             ContentKind::Text => ReceivedContent::Text(String::from_utf8_lossy(&data).to_string()),
             kind => ReceivedContent::File {
+                transfer_id,
                 name: transfer.file_name.unwrap_or_else(|| "file".to_string()),
                 mime: transfer.mime_type.unwrap_or_else(|| "application/octet-stream".to_string()),
                 kind,

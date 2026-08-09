@@ -63,9 +63,12 @@ crates/
 | Wi-Fi / UDP transport | Working |
 | LAN auto-discovery + pairing codes | Working -- verified two devices find each other and get matching codes with no IP entry |
 | File attachments (image / video / voice note) | Working -- chunked so any file size flows through the same relay path; verified a 150KB attachment reassembles byte-for-byte |
+| Addressed (per-contact) messaging | Working -- messages/attachments target one specific peer instead of a shared broadcast, so each connected device gets its own private thread |
+| Per-contact chat UI (mobile apps) | Working -- WhatsApp-style conversation list (one card per connected device, with online/offline status and a last-message preview), tapping a card opens that person's own thread |
+| Voice & video calling (mobile apps) | Working -- live mesh-relayed calls with ringing/accept/reject/hang-up signaling, real audio capture+playback, and video capture where camera hardware is available; verified live in the iOS Simulator, including multi-hop relay of call signaling and media frames |
 | Bluetooth LE transport | Can scan + connect; can't yet be discovered by others (needs platform-specific work per OS, see [Roadmap](#roadmap)) |
-| iOS app | Runs in the iOS Simulator -- Chat screen verified via screenshot |
-| Android app | Builds and genuinely links the engine; not yet run on an emulator/device |
+| iOS app | Runs in the iOS Simulator -- conversation list, per-contact chat threads, and voice/video calling all verified live via screenshots on two simulators talking to each other |
+| Android app | Builds and genuinely links the engine, with UI mirroring the iOS app (conversation list, per-contact threads, calling); not yet run on an emulator/device |
 
 ## Try the relay demo (3 nodes, no real radios needed)
 
@@ -125,6 +128,29 @@ Verified with `crates/mesh-mobile/swift-tests/file_transfer_smoke_test.swift`: s
 150KB attachment (split into ~150 chunks) between two `MeshClient`s and confirms the
 reassembled bytes match the original exactly, byte-for-byte.
 
+## Per-contact chat (multiple conversations)
+
+Early on, every message was a broadcast: anything you sent went out to every connected
+device, and every device saw the same single shared chat feed -- fine for a demo, not how
+a real chat app works once more than one contact is connected.
+
+Messages are now addressed to one specific peer, the same way calls already were:
+`Chunk` (the wire format for both text and file attachments, see
+`crates/mesh-core/src/payload.rs`) carries a `target: Option<NodeId>` -- `None` means
+broadcast (kept only so `mesh-cli`'s terminal demo still works unchanged), `Some(NodeId)`
+means a direct message to exactly one device. Every relay still forwards the envelope
+regardless of who it's addressed to (multi-hop reachability is unaffected), but only the
+intended recipient surfaces it to their own UI (`MeshNode::handle_incoming` in
+`crates/mesh-core/src/node.rs`).
+
+Both mobile apps' Chat tab is a conversation list -- one card per connected device (like
+WhatsApp), showing an avatar, the device's display name, an online/offline dot, and a
+preview of the last message exchanged with just that person. Tapping a card opens that
+person's own thread (`ChatThreadView.swift` / `ChatThreadScreen.kt`), showing only the
+messages exchanged with them, with their online/offline status and voice/video call
+buttons right in the header. The Settings screen's nearby-devices list also has a direct
+chat-icon shortcut into a peer's thread alongside its call buttons.
+
 ## Mobile bindings (Swift / Kotlin)
 
 `mesh-mobile` exposes `mesh-core` to Swift and Kotlin via [UniFFI](https://mozilla.github.io/uniffi-rs/),
@@ -154,13 +180,39 @@ auto-discovery/pairing test.) Swift only allows top-level executable code in a f
 literally named `main.swift`, hence the copy step. Kotlin bindings work the same way with
 `--language kotlin`.
 
+## Voice & video calling
+
+Calls use the same addressed-messaging pattern as chat: `AddressedCall { target: NodeId }`
+(`crates/mesh-core/src/call.rs`) carries invite/accept/reject/end signaling and media
+frames to one specific peer over the mesh, relayed hop-by-hop like everything else. A
+few things needed extra care versus the happy path:
+
+- **Signal reliability**: accept/reject/end signals are sent with retries (3x, 200ms
+  apart) since a single dropped UDP packet shouldn't leave the other side stuck ringing
+  forever or unaware a call ended. Invite signals are deliberately *not* retried, to avoid
+  duplicate rings or spurious auto-declines.
+- **Frame ordering**: call frames are sent synchronously rather than spawned onto worker
+  threads, since audio/video frame order matters and spawned tasks can otherwise race
+  and arrive out of sequence.
+- **Media capture/playback**: `CallAudioEngine` (iOS/Android) captures and plays back
+  microphone audio in real time; `CallVideoCapture` captures camera frames where hardware
+  is available and shows a clear "No camera" / "Waiting for video..." placeholder
+  otherwise (e.g. the iOS Simulator has no camera).
+
+Both mobile apps show phone/video call buttons next to a connected peer in Settings and
+in that peer's own chat thread. Verified live in the iOS Simulator with two devices:
+ringing, accept, active call (audio + placeholder video), mute, hang-up, and
+call-cancellation while still ringing all worked correctly across the mesh relay path.
+
 ## iOS app
 
-`ios/` contains a minimal SwiftUI app (`MeshTalk`) wrapping `mesh-mobile`: a Chat tab
-(message list + send box, polling `pollMessage()` on a timer) and a Settings tab. Nearby
-devices on the same Wi-Fi network show up automatically with a pairing code and a
-"Connect" button -- no manual IP entry needed (a manual `IP:port` field is still there
-under "Advanced" as a fallback). No BLE auto-discovery yet across networks (see Roadmap).
+`ios/` contains a SwiftUI app (`MeshTalk`) wrapping `mesh-mobile`: a Chat tab (WhatsApp-
+style conversation list -- one card per connected device with online status and a last-
+message preview -- that opens into a per-contact thread with its own call buttons) and a
+Settings tab. Nearby devices on the same Wi-Fi network show up automatically with a
+pairing code and a "Connect" button -- no manual IP entry needed (a manual `IP:port`
+field is still there under "Advanced" as a fallback). No BLE auto-discovery yet across
+networks (see Roadmap).
 
 The Xcode project itself (`ios/MeshTalk.xcodeproj`) is generated by
 [XcodeGen](https://github.com/yonaskolb/XcodeGen) from `ios/project.yml`, and the Rust
@@ -189,10 +241,11 @@ underneath.
 
 ## Android app
 
-`android/` contains a minimal Jetpack Compose app mirroring the iOS one exactly: a Chat
-screen and a Settings screen with the same auto-discovery + pairing-code UX (nearby
-devices show up automatically, tap "Connect" -- no manual IP entry needed), wrapping
-`mesh-mobile` via UniFFI-generated Kotlin bindings and JNA.
+`android/` contains a Jetpack Compose app mirroring the iOS one: the same WhatsApp-style
+conversation list opening into per-contact threads with call buttons, and a Settings
+screen with the same auto-discovery + pairing-code UX (nearby devices show up
+automatically, tap "Connect" -- no manual IP entry needed), wrapping `mesh-mobile` via
+UniFFI-generated Kotlin bindings and JNA.
 
 Requires the Android SDK + NDK (only the NDK's clang is needed as the linker; nothing
 Android-specific is compiled from C/C++ otherwise) and JDK 17 (AGP doesn't yet support
@@ -223,9 +276,10 @@ yet (no AVD was set up in this environment).
    (needed so a device can be *found*) needs native platform code per OS -- see the repo
    issue tracker for the macOS/iOS, Android, and Linux follow-ups.
 2. Mobile apps (iOS/Android) via the Rust core + UniFFI bindings -- see Status above.
-3. Async voice/video "messages" (store-and-forward, like voice notes) -- realistic over
-   many hops, unlike live calls which need low latency and higher bandwidth.
-4. Live voice calls limited to a small number of hops over Wi-Fi Direct.
+3. Voice/video calling over Wi-Fi/UDP is working today (see [Voice & video
+   calling](#voice--video-calling)); extending live calls to stay usable over many hops
+   (higher latency/lower bandwidth links) and adding group calls are still open.
+4. Run the Android app on an emulator/real device (currently build-verified only).
 5. Optional browser client (experimental -- Web Bluetooth/WebRTC have limited/no support
    on iOS Safari, so this will always be a secondary option to the native mobile app).
 

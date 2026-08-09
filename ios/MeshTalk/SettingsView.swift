@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage("meshtalk.listenPort") private var listenPort: Int = 9001
     @AppStorage("meshtalk.channel") private var channel: String = "mesh-demo"
     @State private var manualAddress: String = ""
+    @State private var chatSheetPeer: DiscoveredPeer?
 
     var body: some View {
         Form {
@@ -72,6 +73,17 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .sheet(item: $chatSheetPeer) { peer in
+            NavigationStack {
+                ChatThreadView(peer: peer)
+                    .environmentObject(store)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { chatSheetPeer = nil }
+                        }
+                    }
+            }
+        }
     }
 
     private func nearbyPeerRow(_ peer: DiscoveredPeer) -> some View {
@@ -85,6 +97,29 @@ struct SettingsView: View {
             }
             Spacer()
             if isConnected {
+                Button {
+                    chatSheetPeer = peer
+                } label: {
+                    Image(systemName: "message.fill")
+                }
+                .buttonStyle(.borderless)
+
+                Button {
+                    store.placeCall(to: peer, video: false)
+                } label: {
+                    Image(systemName: "phone.fill")
+                }
+                .buttonStyle(.borderless)
+                .disabled(store.callPhase != .idle)
+
+                Button {
+                    store.placeCall(to: peer, video: true)
+                } label: {
+                    Image(systemName: "video.fill")
+                }
+                .buttonStyle(.borderless)
+                .disabled(store.callPhase != .idle)
+
                 Label("Connected", systemImage: "checkmark.circle.fill")
                     .labelStyle(.iconOnly)
                     .foregroundStyle(.green)

@@ -28,7 +28,8 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: meshtalk
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: "meshtalk relays chat messages between nearby devices over your local Wi-Fi network."
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "meshtalk needs microphone access to record voice notes."
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "meshtalk needs microphone access to record voice notes and voice/video calls."
+        INFOPLIST_KEY_NSCameraUsageDescription: "meshtalk needs camera access for video calls."
     dependencies:
       - framework: Frameworks/mesh_mobileFFI.xcframework
         embed: false

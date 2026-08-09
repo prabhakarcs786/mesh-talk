@@ -6,8 +6,12 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Needed to discover/relay with other meshtalk devices on the local network. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <!-- Needed to record voice notes. -->
+    <!-- Needed to record voice notes and for voice/video calls. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Needed for video calls. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.front" android:required="false" />
 
     <application
         android:allowBackup="true"

@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
         loop {
             match node_for_recv.recv_raw().await {
                 Ok(raw) => match node_for_recv.handle_incoming(raw).await {
-                    Ok(Some((sender, content))) => match content {
+                    Ok(Some(mesh_core::IncomingEvent::Content(sender, content))) => match content {
                         mesh_core::ReceivedContent::Text(text) => {
                             println!("[{}] {}", short_id(&sender), text);
                         }
@@ -83,6 +83,29 @@ async fn main() -> anyhow::Result<()> {
                             );
                         }
                     },
+                    Ok(Some(mesh_core::IncomingEvent::Progress(sender, progress))) => {
+                        // Only print occasionally so a multi-thousand-chunk transfer doesn't
+                        // spam the terminal with a line per chunk.
+                        if progress.done_chunks % 50 == 0 || progress.done_chunks == progress.total_chunks {
+                            println!(
+                                "[{}] receiving attachment: {}/{} chunks",
+                                short_id(&sender),
+                                progress.done_chunks,
+                                progress.total_chunks
+                            );
+                        }
+                    }
+                    Ok(Some(mesh_core::IncomingEvent::Call(sender, message))) => {
+                        // The CLI demo has no mic/speaker/camera -- just log that call
+                        // signaling/frames are flowing (mesh-mobile is where an actual
+                        // call gets placed).
+                        match message {
+                            mesh_core::CallMessage::Signal(signal) => {
+                                println!("[{}] call signal: {:?} (can't place calls from the CLI)", short_id(&sender), signal);
+                            }
+                            mesh_core::CallMessage::Frame(_) => {} // too noisy to log per-frame
+                        }
+                    }
                     Ok(None) => {} // duplicate, invalid, or not decryptable by us
                     Err(e) => eprintln!("[warn] failed to process incoming packet: {e}"),
                 },

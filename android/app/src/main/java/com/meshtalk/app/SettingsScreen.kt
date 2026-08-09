@@ -6,10 +6,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -25,7 +29,7 @@ import androidx.compose.ui.unit.dp
 import uniffi.mesh_mobile.DiscoveredPeer
 
 @Composable
-fun SettingsScreen(store: MeshStore, modifier: Modifier = Modifier) {
+fun SettingsScreen(store: MeshStore, onOpenChat: (DiscoveredPeer) -> Unit, modifier: Modifier = Modifier) {
     var displayName by remember { mutableStateOf("") }
     var listenPort by remember { mutableIntStateOf(9001) }
     var channel by remember { mutableStateOf("mesh-demo") }
@@ -85,7 +89,7 @@ fun SettingsScreen(store: MeshStore, modifier: Modifier = Modifier) {
                 }
             } else {
                 for (peer in store.discoveredPeers) {
-                    NearbyPeerRow(peer, store)
+                    NearbyPeerRow(peer, store, onOpenChat)
                 }
             }
             Text(
@@ -123,7 +127,7 @@ fun SettingsScreen(store: MeshStore, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun NearbyPeerRow(peer: DiscoveredPeer, store: MeshStore) {
+private fun NearbyPeerRow(peer: DiscoveredPeer, store: MeshStore, onOpenChat: (DiscoveredPeer) -> Unit) {
     val isConnected = store.connectedAddresses.contains(peer.address)
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -139,6 +143,15 @@ private fun NearbyPeerRow(peer: DiscoveredPeer, store: MeshStore) {
             )
         }
         if (isConnected) {
+            IconButton(onClick = { onOpenChat(peer) }) {
+                Icon(Icons.Filled.ChatBubble, contentDescription = "Chat")
+            }
+            IconButton(onClick = { store.placeCall(peer, video = false) }, enabled = store.callPhase == CallPhase.Idle) {
+                Icon(Icons.Filled.Call, contentDescription = "Call")
+            }
+            IconButton(onClick = { store.placeCall(peer, video = true) }, enabled = store.callPhase == CallPhase.Idle) {
+                Icon(Icons.Filled.Videocam, contentDescription = "Video call")
+            }
             Icon(Icons.Filled.CheckCircle, contentDescription = "Connected", tint = MaterialTheme.colorScheme.primary)
         } else {
             Button(onClick = { store.connect(peer) }) {
