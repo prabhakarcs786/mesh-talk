@@ -5,6 +5,7 @@
 //! own directly-reachable peers.
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use rand::RngCore;
 
@@ -15,6 +16,10 @@ use crate::payload::{split_into_chunks, Chunk, ContentKind, ReceivedContent};
 use crate::reassembly::Reassembler;
 use crate::store::SeenCache;
 use crate::transport::Transport;
+
+/// Delay between sending successive chunks of the same transfer -- see the comment in
+/// `broadcast_chunks` for why this matters for larger attachments.
+const CHUNK_SEND_PACING: Duration = Duration::from_millis(2);
 
 pub struct MeshNode<T: Transport> {
     identity: Identity,
@@ -74,8 +79,19 @@ impl<T: Transport> MeshNode<T> {
     }
 
     async fn broadcast_chunks(&self, chunks: Vec<Chunk>) -> anyhow::Result<()> {
-        for chunk in chunks {
+        let last_index = chunks.len().saturating_sub(1);
+        for (i, chunk) in chunks.into_iter().enumerate() {
             self.broadcast_one_chunk(&chunk).await?;
+            // Small pacing delay between chunks: firing hundreds/thousands of UDP
+            // datagrams back-to-back in a tight loop (a multi-MB photo or video is
+            // thousands of 1KB chunks) can overrun the receiver's socket buffer and the
+            // network's own buffering, causing silent drops -- and since reassembly needs
+            // *every* chunk to complete (no retransmission), losing even one means the
+            // whole attachment never arrives. This was easy to miss with small test files
+            // (a few dozen chunks) but reproduces reliably with real multi-MB photos/videos.
+            if i != last_index {
+                tokio::time::sleep(CHUNK_SEND_PACING).await;
+            }
         }
         Ok(())
     }

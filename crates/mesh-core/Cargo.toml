@@ -14,3 +14,7 @@ blake3 = "1"
 rand = "0.8"
 async-trait = "0.1"
 anyhow = "1"
+# Only the "time" feature -- just for pacing chunk sends (see node.rs::broadcast_chunks).
+# Every caller of mesh-core's async fns already runs under a tokio runtime (mesh-cli,
+# mesh-mobile, mesh-transport-udp), so this doesn't add a new runtime dependency in practice.
+tokio = { version = "1", default-features = false, features = ["time"] }

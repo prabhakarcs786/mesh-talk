@@ -17,8 +17,10 @@ let bob = try! MeshClient(
 
 Thread.sleep(forTimeInterval: 0.3)
 
-// Simulate a ~150KB "image" -- big enough to require many chunks (CHUNK_SIZE is 16KB).
-var imageBytes = Data(count: 150_000)
+// Simulate a ~3MB "image" -- realistic size for an actual phone photo (thousands of
+// chunks at CHUNK_SIZE=1KB), big enough to reproduce burst-related UDP packet loss if
+// chunk sends aren't paced and receive buffers aren't sized for it.
+var imageBytes = Data(count: 3_000_000)
 for i in 0..<imageBytes.count {
     imageBytes[i] = UInt8((i * 37 + 11) % 256)
 }
@@ -27,7 +29,7 @@ let sent = alice.sendFile(data: imageBytes, fileName: "photo.jpg", mimeType: "im
 print("alice.sendFile ->", sent)
 
 var received: ReceivedMessage? = nil
-for _ in 0..<50 {
+for _ in 0..<300 {
     if let msg = bob.pollMessage() {
         received = msg
         break

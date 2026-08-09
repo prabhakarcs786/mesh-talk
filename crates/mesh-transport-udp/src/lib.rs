@@ -9,15 +9,23 @@
 //! routing.
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use mesh_core::Transport;
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 
 pub mod discovery;
 pub use discovery::{DiscoveredPeer, LanDiscovery};
+
+/// Larger than the OS default (which can be as little as ~200KB) so a burst of many
+/// small chunks from a multi-MB photo/video attachment has room to sit in the kernel's
+/// receive queue instead of being dropped before this process gets a chance to read it.
+const SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 pub struct UdpTransport {
     socket: Arc<UdpSocket>,
@@ -26,7 +34,15 @@ pub struct UdpTransport {
 
 impl UdpTransport {
     pub async fn bind(listen_addr: &str, peer_addrs: Vec<String>) -> anyhow::Result<Self> {
-        let socket = UdpSocket::bind(listen_addr).await?;
+        let addr = SocketAddr::from_str(listen_addr)?;
+        let raw_socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
+        raw_socket.set_nonblocking(true)?;
+        // Best-effort: a platform that refuses a bigger buffer still works, just with
+        // more risk of drops under a big burst, so don't fail bind() over it.
+        let _ = raw_socket.set_recv_buffer_size(SOCKET_BUFFER_BYTES);
+        let _ = raw_socket.set_send_buffer_size(SOCKET_BUFFER_BYTES);
+        raw_socket.bind(&addr.into())?;
+        let socket = UdpSocket::from_std(raw_socket.into())?;
         Ok(Self {
             socket: Arc::new(socket),
             peer_addrs: Mutex::new(peer_addrs.into_iter().collect()),
