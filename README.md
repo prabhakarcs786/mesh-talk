@@ -1,49 +1,66 @@
 # meshtalk
 
-Offline, internet-free mesh chat. Devices relay messages hop-by-hop through each other
-so two people who are *not* directly in range of each other can still reach one another,
-as long as there's an unbroken chain of nodes between them (Bluetooth/Wi-Fi Direct/LoRa
-range today, no cellular network or internet required).
+Chat that works with **no internet and no cellular signal**. Devices relay messages for
+each other, hop by hop, so two people out of range of each other can still talk as long
+as there's an unbroken chain of devices between them.
 
-This is not a wrapper around a cloud API. The engineering is in the mesh routing layer
-itself: flood routing with a TTL hop budget, message de-duplication, and end-to-end
-authenticated encryption that survives relaying through untrusted intermediate nodes.
+```mermaid
+graph LR
+    A((Alice)) ---|in range| B((Bob))
+    B ---|in range| C((Carol))
+    A -.->|message reaches Carol via Bob| C
+```
 
-## Status
+Alice and Carol are never directly connected -- Bob relays for them automatically. This
+works whether "in range" means a meter (Bluetooth) or a kilometer (LoRa), and with any
+number of hops in between.
 
-Early stage. What works today:
-- `mesh-core`: transport-agnostic engine (identity, crypto, flood routing, de-dup, TTL relay)
-- `mesh-transport-udp`: a UDP-based `Transport` impl for testing on a LAN/loopback without
-  real radio hardware
-- `mesh-cli`: a terminal chat client to exercise the engine end-to-end
+This is a real mesh-networking engine, not a wrapper around a cloud API. The hard part is
+the routing layer: flood routing with a hop-count budget, message de-duplication, and
+end-to-end encryption that survives being relayed through devices that aren't the sender
+or the recipient.
 
-Not built yet (see Roadmap): real short-range radio transports (Bluetooth LE / Wi-Fi
-Direct) for phones, a mobile app, async voice/video "store-and-forward" messages, and a
-browser client.
+## How it works
 
-## Architecture
+```mermaid
+graph TD
+    iOS[iOS app] --> Mobile
+    Android[Android app] --> Mobile
+    CLI[mesh-cli] --> Core
+    Mobile[mesh-mobile bindings] --> Core[mesh-core engine]
+    Core --> UDP[Wi-Fi / UDP transport]
+    Core --> BLE[Bluetooth LE transport]
+```
+
+- **`mesh-core`** -- the engine. Doesn't know or care what radio it's running on.
+  - *Identity*: every device has a keypair; messages are signed so a relay can't forge them.
+  - *Encryption*: a shared passphrase encrypts messages -- like tuning into the same radio channel.
+  - *Routing*: every device that gets a new message re-sends it to its own neighbors (and
+    decrements a hop-count budget so messages don't loop forever). That's what makes the
+    relay chain above work, like a bucket brigade.
+- **Transports** -- swappable radios behind one `Transport` interface. Today: Wi-Fi/UDP
+  (fully working) and Bluetooth LE (partial, see Status). Planned: Wi-Fi Direct, LoRa.
+- **`mesh-mobile`** -- exposes the engine to Swift (iOS) and Kotlin (Android) apps.
 
 ```
 crates/
-  mesh-core/           radio-agnostic engine: identity, crypto, routing, message store
-  mesh-transport-udp/  Transport impl over UDP (for local dev/testing)
-  mesh-transport-ble/  Transport impl over Bluetooth LE (central role only -- see below)
+  mesh-core/           the engine: identity, crypto, routing, message store
+  mesh-transport-udp/  Transport impl over Wi-Fi/UDP (works today)
+  mesh-transport-ble/  Transport impl over Bluetooth LE (partial, see Status)
   mesh-mobile/         UniFFI bindings exposing mesh-core to Swift (iOS) and Kotlin (Android)
   mesh-cli/            terminal demo client
 ```
 
-- **Identity**: each node has an Ed25519 keypair; the public key is its `NodeId`. Every
-  message is signed so any relay or recipient can verify who originally sent it.
-- **Encryption**: messages are encrypted with a shared channel key (XChaCha20-Poly1305,
-  key derived from a passphrase via BLAKE3) — like tuning into the same walkie-talkie
-  frequency. Private 1:1 key-exchange encryption is on the roadmap.
-- **Routing**: flood routing with a TTL hop budget. Every node that receives a new
-  message (checked via a bounded de-dup cache) decrements the TTL and re-broadcasts it to
-  its own directly-reachable peers, then attempts to decrypt it for display. This is what
-  lets a message travel across a whole chain of relays, exactly like a bucket brigade.
-- **Transport**: a `Transport` trait decouples routing from the physical link. Swapping
-  in Bluetooth LE or Wi-Fi Direct on mobile means implementing this one trait — the
-  routing/crypto logic above doesn't change.
+## Status
+
+| Piece | State |
+|---|---|
+| Core engine (routing, crypto, identity) | Working, try the demo below |
+| Wi-Fi / UDP transport | Working |
+| Bluetooth LE transport | Can scan + connect; can't yet be discovered by others (needs platform-specific work per OS, see [Roadmap](#roadmap)) |
+| iOS app | Builds and genuinely links the engine; not yet run on a simulator/device |
+| Android app | Builds and genuinely links the engine; not yet run on an emulator/device |
+| Voice / video | Not started |
 
 ## Try the relay demo (3 nodes, no real radios needed)
 
@@ -92,30 +109,78 @@ DYLD_LIBRARY_PATH=target/debug /tmp/test_mesh
 (Swift only allows top-level executable code in a file literally named `main.swift`,
 hence the copy step.) Kotlin bindings work the same way with `--language kotlin`.
 
+## iOS app
+
+`ios/` contains a minimal SwiftUI app (`MeshTalk`) wrapping `mesh-mobile`: a Chat tab
+(message list + send box, polling `pollMessage()` on a timer) and a Settings tab (display
+name, channel passphrase, peer addresses, connect/disconnect). It uses today's UDP
+transport, so peers need to be on the same Wi-Fi network and you enter their `IP:port`
+manually -- no BLE auto-discovery yet (see Roadmap).
+
+The Xcode project itself (`ios/MeshTalk.xcodeproj`) is generated by
+[XcodeGen](https://github.com/yonaskolb/XcodeGen) from `ios/project.yml`, and the Rust
+library is packaged as an XCFramework -- neither is committed to git since both are
+build artifacts. Regenerate everything with:
+
+```bash
+brew install xcodegen   # one-time
+rustup target add aarch64-apple-ios-sim   # one-time
+./scripts/build-ios.sh sim
+```
+
+This builds `mesh-mobile` for the iOS Simulator, generates Swift bindings, packages the
+XCFramework, and runs XcodeGen. Then either open `ios/MeshTalk.xcodeproj` in Xcode, or
+build from the CLI (unsigned, since there's no dev team configured):
+
+```bash
+xcodebuild -project ios/MeshTalk.xcodeproj -target MeshTalk -sdk iphonesimulator \
+  ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+```
+
+**Status**: builds successfully, and the compiled binary genuinely contains
+`mesh-mobile`/`mesh-core` symbols (verified with `nm`) -- it just hasn't been run on a
+simulator/device yet, since that needs an iOS Simulator runtime downloaded via Xcode
+(Settings > Platforms).
+
+## Android app
+
+`android/` contains a minimal Jetpack Compose app mirroring the iOS one exactly: a Chat
+screen and a Settings screen (display name, channel passphrase, peer addresses,
+connect/disconnect), wrapping `mesh-mobile` via UniFFI-generated Kotlin bindings and JNA.
+
+Requires the Android SDK + NDK (only the NDK's clang is needed as the linker; nothing
+Android-specific is compiled from C/C++ otherwise) and JDK 17 (AGP doesn't yet support
+newer JDKs like 25). One-time setup and build:
+
+```bash
+brew install --cask android-commandlinetools
+export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
+yes | sdkmanager --licenses
+sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+
+./scripts/build-android.sh   # builds all 4 ABIs, generates Kotlin bindings, stages jniLibs
+
+cd android
+JAVA_HOME=$(/usr/libexec/java_home -v 17) ./gradlew assembleDebug
+```
+
+**Status**: `BUILD SUCCESSFUL` -- the APK genuinely packages `libmesh_mobile.so` for all
+4 ABIs (verified with `llvm-nm`) -- it just hasn't been installed on an emulator/device
+yet (no AVD was set up in this environment).
+
 ## Roadmap
 
 1. Real short-range radio transports: Bluetooth LE and Wi-Fi Direct (mobile), LoRa
-   (long-range, low-bandwidth) for text/telemetry.
-
-   **BLE status**: `mesh-transport-ble` implements the central (scan + connect) role via
-   [`btleplug`](https://docs.rs/btleplug), verified against this machine's real Bluetooth
-   adapter (see `crates/mesh-transport-ble/examples/scan_nearby.rs`). `btleplug` has no
-   peripheral/advertising API, though, so a node can't yet make itself discoverable --
-   that half needs native platform code (CoreBluetooth `CBPeripheralManager` on
-   macOS/iOS, `BluetoothGattServer`/`BluetoothLeAdvertiser` on Android, BlueZ's GATT
-   application API on Linux). Tracked as follow-up issues per platform.
-2. Mobile app (iOS/Android) via Rust core + FFI bindings (UniFFI), since Xcode/Android
-   tooling can call into `mesh-core` directly without rewriting the engine.
-
-   **Status**: `mesh-mobile` UniFFI bindings exist and are verified end-to-end -- a real
-   compiled Swift program (`crates/mesh-mobile/swift-tests/smoke_test.swift`) creates two
-   `MeshClient`s and confirms a message relays between them through the Swift API. Not
-   done yet: an actual iOS/Android app UI, and Kotlin bindings haven't been smoke-tested
-   the same way (should work identically via `--language kotlin`, untested).
-3. Async voice/video "messages" (store-and-forward, like voice notes) — realistic over
+   (long-range, low-bandwidth) for text/telemetry. BLE central role (scan + connect)
+   works today via [`btleplug`](https://docs.rs/btleplug); peripheral/advertising mode
+   (needed so a device can be *found*) needs native platform code per OS -- see the repo
+   issue tracker for the macOS/iOS, Android, and Linux follow-ups.
+2. Mobile apps (iOS/Android) via the Rust core + UniFFI bindings -- see Status above.
+3. Async voice/video "messages" (store-and-forward, like voice notes) -- realistic over
    many hops, unlike live calls which need low latency and higher bandwidth.
 4. Live voice calls limited to a small number of hops over Wi-Fi Direct.
-5. Optional browser client (experimental — Web Bluetooth/WebRTC have limited/no support
+5. Optional browser client (experimental -- Web Bluetooth/WebRTC have limited/no support
    on iOS Safari, so this will always be a secondary option to the native mobile app).
 
 ## Why this matters
