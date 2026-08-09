@@ -11,6 +11,8 @@ use rand::RngCore;
 use crate::crypto::ChannelKey;
 use crate::identity::{verify, Identity, NodeId};
 use crate::message::Envelope;
+use crate::payload::{split_into_chunks, Chunk, ContentKind, ReceivedContent};
+use crate::reassembly::Reassembler;
 use crate::store::SeenCache;
 use crate::transport::Transport;
 
@@ -18,6 +20,7 @@ pub struct MeshNode<T: Transport> {
     identity: Identity,
     channel_key: ChannelKey,
     seen: Mutex<SeenCache>,
+    reassembler: Mutex<Reassembler>,
     transport: T,
     default_ttl: u8,
 }
@@ -28,6 +31,7 @@ impl<T: Transport> MeshNode<T> {
             identity,
             channel_key,
             seen: Mutex::new(SeenCache::new(4096)),
+            reassembler: Mutex::new(Reassembler::new()),
             transport,
             default_ttl,
         }
@@ -49,9 +53,36 @@ impl<T: Transport> MeshNode<T> {
         self.transport.recv().await
     }
 
-    /// Encrypt, sign and flood a new message onto the mesh.
-    pub async fn broadcast(&self, plaintext: &[u8]) -> anyhow::Result<()> {
-        let (ciphertext, nonce) = self.channel_key.encrypt(plaintext);
+    /// Encrypt, sign and flood a plain-text message onto the mesh.
+    pub async fn broadcast_text(&self, text: &str) -> anyhow::Result<()> {
+        let chunks = split_into_chunks(ContentKind::Text, None, None, text.as_bytes());
+        self.broadcast_chunks(chunks).await
+    }
+
+    /// Encrypt, sign and flood a file attachment (image, video, voice note, or generic
+    /// file) onto the mesh, splitting it into chunks that flow through the same relay
+    /// path as any other message.
+    pub async fn broadcast_file(
+        &self,
+        kind: ContentKind,
+        file_name: String,
+        mime_type: String,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
+        let chunks = split_into_chunks(kind, Some(file_name), Some(mime_type), data);
+        self.broadcast_chunks(chunks).await
+    }
+
+    async fn broadcast_chunks(&self, chunks: Vec<Chunk>) -> anyhow::Result<()> {
+        for chunk in chunks {
+            self.broadcast_one_chunk(&chunk).await?;
+        }
+        Ok(())
+    }
+
+    async fn broadcast_one_chunk(&self, chunk: &Chunk) -> anyhow::Result<()> {
+        let plaintext = bincode::serialize(chunk)?;
+        let (ciphertext, nonce) = self.channel_key.encrypt(&plaintext);
         let mut id = [0u8; 16];
         rand::rngs::OsRng.fill_bytes(&mut id);
         let sender = self.identity.node_id();
@@ -80,10 +111,14 @@ impl<T: Transport> MeshNode<T> {
         Ok(())
     }
 
-    /// Feed one raw incoming packet in. Returns `Some((sender, plaintext))` when it's a new
-    /// message meant to be shown to the user. Already-seen or invalid packets return `None`
-    /// (they may still have been relayed onward).
-    pub async fn handle_incoming(&self, raw: Vec<u8>) -> anyhow::Result<Option<(NodeId, Vec<u8>)>> {
+    /// Feed one raw incoming packet in. Returns `Some((sender, content))` once a full
+    /// message (which may have taken several chunks) is ready to show the user.
+    /// Already-seen, invalid, or still-incomplete packets return `None` (they may still
+    /// have been relayed onward).
+    pub async fn handle_incoming(
+        &self,
+        raw: Vec<u8>,
+    ) -> anyhow::Result<Option<(NodeId, ReceivedContent)>> {
         let envelope: Envelope = bincode::deserialize(&raw)?;
 
         let Ok(sig): Result<[u8; 64], _> = envelope.signature.clone().try_into() else {
@@ -107,7 +142,14 @@ impl<T: Transport> MeshNode<T> {
             self.flood(&relayed).await?;
         }
 
-        let plaintext = self.channel_key.decrypt(&envelope.ciphertext, &envelope.nonce);
-        Ok(plaintext.map(|p| (envelope.sender, p)))
+        let Some(plaintext) = self.channel_key.decrypt(&envelope.ciphertext, &envelope.nonce) else {
+            return Ok(None);
+        };
+        let Ok(chunk) = bincode::deserialize::<Chunk>(&plaintext) else {
+            return Ok(None);
+        };
+
+        let content = self.reassembler.lock().unwrap().accept(chunk);
+        Ok(content.map(|c| (envelope.sender, c)))
     }
 }

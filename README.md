@@ -62,10 +62,10 @@ crates/
 | Core engine (routing, crypto, identity) | Working, try the demo below |
 | Wi-Fi / UDP transport | Working |
 | LAN auto-discovery + pairing codes | Working -- verified two devices find each other and get matching codes with no IP entry |
+| File attachments (image / video / voice note) | Working -- chunked so any file size flows through the same relay path; verified a 150KB attachment reassembles byte-for-byte |
 | Bluetooth LE transport | Can scan + connect; can't yet be discovered by others (needs platform-specific work per OS, see [Roadmap](#roadmap)) |
 | iOS app | Runs in the iOS Simulator -- Chat screen verified via screenshot |
 | Android app | Builds and genuinely links the engine; not yet run on an emulator/device |
-| Voice / video | Not started |
 
 ## Try the relay demo (3 nodes, no real radios needed)
 
@@ -107,6 +107,23 @@ cargo run -p mesh-transport-udp --example discovery_demo -- bob
 Each side prints the other's name, address, and pairing code -- both should show the
 *same* code. The mobile apps' Settings screens use this instead of a manual IP field:
 nearby devices just show up with a "Connect" button.
+
+## File attachments (images, video, voice notes)
+
+Messages aren't limited to text. `mesh-core` splits any attachment into small chunks
+(1KB each -- see `crates/mesh-core/src/payload.rs` for why: larger chunks were silently
+dropped over UDP in testing, likely an MTU/fragmentation issue) that flow through the
+exact same signed/encrypted/relayed path as a text message, and reassembles them on the
+other end (`crates/mesh-core/src/reassembly.rs`) once every chunk has arrived.
+
+Both apps' Chat screens have a paperclip button (photo/video picker) and a mic button
+(voice note recorder) alongside the text field. Large attachments -- especially video --
+are less likely to arrive complete over many hops, since the mesh has no retransmission;
+this works best for photos and short voice notes today.
+
+Verified with `crates/mesh-mobile/swift-tests/file_transfer_smoke_test.swift`: sends a
+150KB attachment (split into ~150 chunks) between two `MeshClient`s and confirms the
+reassembled bytes match the original exactly, byte-for-byte.
 
 ## Mobile bindings (Swift / Kotlin)
 

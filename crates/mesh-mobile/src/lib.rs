@@ -22,12 +22,58 @@ pub enum MeshError {
     Network(String),
 }
 
-/// A single decrypted message received from the mesh, ready to show in a UI.
+/// What kind of attachment a message carries -- mirrors `mesh_core::ContentKind`, kept as
+/// a separate type here since UniFFI's derive macros need to be applied where a type is
+/// defined, not on a type imported from another crate.
+#[derive(uniffi::Enum)]
+pub enum AttachmentKind {
+    Image,
+    Video,
+    Voice,
+    File,
+}
+
+impl From<AttachmentKind> for mesh_core::ContentKind {
+    fn from(kind: AttachmentKind) -> Self {
+        match kind {
+            AttachmentKind::Image => mesh_core::ContentKind::Image,
+            AttachmentKind::Video => mesh_core::ContentKind::Video,
+            AttachmentKind::Voice => mesh_core::ContentKind::Voice,
+            AttachmentKind::File => mesh_core::ContentKind::File,
+        }
+    }
+}
+
+impl From<mesh_core::ContentKind> for AttachmentKind {
+    fn from(kind: mesh_core::ContentKind) -> Self {
+        match kind {
+            mesh_core::ContentKind::Image => AttachmentKind::Image,
+            mesh_core::ContentKind::Video => AttachmentKind::Video,
+            mesh_core::ContentKind::Voice => AttachmentKind::Voice,
+            // Plain text never reaches here (see ReceivedContent::Text handling below);
+            // anything else generic falls back to File.
+            _ => AttachmentKind::File,
+        }
+    }
+}
+
+/// A file attachment (image, video, voice note, or generic file) carried by a message.
+#[derive(uniffi::Record)]
+pub struct FileAttachment {
+    pub kind: AttachmentKind,
+    pub name: String,
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+/// A single message received from the mesh, ready to show in a UI. Exactly one of
+/// `text`/`attachment` is populated.
 #[derive(uniffi::Record)]
 pub struct ReceivedMessage {
     /// Short hex prefix of the sender's public key -- stable per-device identity.
     pub sender_id: String,
-    pub text: String,
+    pub text: Option<String>,
+    pub attachment: Option<FileAttachment>,
 }
 
 /// A nearby device found via LAN auto-discovery, ready to connect to with one tap
@@ -102,10 +148,23 @@ impl MeshClient {
                     Ok(raw) => raw,
                     Err(_) => break, // transport closed; stop the background loop
                 };
-                if let Ok(Some((sender, plaintext))) = recv_node.handle_incoming(raw).await {
-                    let message = ReceivedMessage {
-                        sender_id: short_id(&sender),
-                        text: String::from_utf8_lossy(&plaintext).to_string(),
+                if let Ok(Some((sender, content))) = recv_node.handle_incoming(raw).await {
+                    let message = match content {
+                        mesh_core::ReceivedContent::Text(text) => ReceivedMessage {
+                            sender_id: short_id(&sender),
+                            text: Some(text),
+                            attachment: None,
+                        },
+                        mesh_core::ReceivedContent::File { name, mime, kind, data } => ReceivedMessage {
+                            sender_id: short_id(&sender),
+                            text: None,
+                            attachment: Some(FileAttachment {
+                                kind: kind.into(),
+                                name,
+                                mime,
+                                data,
+                            }),
+                        },
                     };
                     let mut inbox = recv_inbox.lock().unwrap();
                     inbox.push_back(message);
@@ -136,8 +195,17 @@ impl MeshClient {
     /// not be sent (e.g. no reachable peers right now); the message is not retried.
     pub fn send(&self, text: String) -> bool {
         let payload = format!("{}: {}", self.display_name, text);
+        self.runtime.block_on(self.node.broadcast_text(&payload)).is_ok()
+    }
+
+    /// Encrypts, signs and floods a file attachment (image, video, voice note, or
+    /// generic file) onto the mesh, split into chunks so it flows through the same
+    /// relay path as any other message. Large attachments (especially video) may not
+    /// reliably arrive over many hops -- the mesh has no retransmission -- so this works
+    /// best for images and short voice notes.
+    pub fn send_file(&self, data: Vec<u8>, file_name: String, mime_type: String, kind: AttachmentKind) -> bool {
         self.runtime
-            .block_on(self.node.broadcast(payload.as_bytes()))
+            .block_on(self.node.broadcast_file(kind.into(), file_name, mime_type, &data))
             .is_ok()
     }
 

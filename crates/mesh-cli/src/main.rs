@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
             let payload = format!("{name}: {line}");
-            if let Err(e) = node_for_stdin.broadcast(payload.as_bytes()).await {
+            if let Err(e) = node_for_stdin.broadcast_text(&payload).await {
                 eprintln!("[warn] failed to broadcast: {e}");
             }
         }
@@ -71,10 +71,18 @@ async fn main() -> anyhow::Result<()> {
         loop {
             match node_for_recv.recv_raw().await {
                 Ok(raw) => match node_for_recv.handle_incoming(raw).await {
-                    Ok(Some((sender, plaintext))) => {
-                        let text = String::from_utf8_lossy(&plaintext);
-                        println!("[{}] {}", short_id(&sender), text);
-                    }
+                    Ok(Some((sender, content))) => match content {
+                        mesh_core::ReceivedContent::Text(text) => {
+                            println!("[{}] {}", short_id(&sender), text);
+                        }
+                        mesh_core::ReceivedContent::File { name, mime, data, .. } => {
+                            println!(
+                                "[{}] (attachment: {name}, {mime}, {} bytes -- can't render in a terminal)",
+                                short_id(&sender),
+                                data.len()
+                            );
+                        }
+                    },
                     Ok(None) => {} // duplicate, invalid, or not decryptable by us
                     Err(e) => eprintln!("[warn] failed to process incoming packet: {e}"),
                 },

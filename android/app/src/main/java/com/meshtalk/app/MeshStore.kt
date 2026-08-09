@@ -11,6 +11,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import uniffi.mesh_mobile.AttachmentKind
 import uniffi.mesh_mobile.DiscoveredPeer
 import uniffi.mesh_mobile.MeshClient
 import uniffi.mesh_mobile.ReceivedMessage
@@ -95,6 +96,18 @@ class MeshStore : ViewModel() {
         if (text.isBlank()) return
         if (!current.send(text)) {
             lastError = "Failed to send -- no reachable peers right now."
+        }
+    }
+
+    /**
+     * Sends an image, video, or voice note. Large attachments (especially video) may not
+     * reliably arrive over many hops -- the mesh has no retransmission -- so this works
+     * best for photos and short voice notes.
+     */
+    fun sendFile(data: ByteArray, fileName: String, mimeType: String, kind: AttachmentKind) {
+        val current = client ?: return
+        if (!current.sendFile(data, fileName, mimeType, kind)) {
+            lastError = "Failed to send attachment -- no reachable peers right now."
         }
     }
 

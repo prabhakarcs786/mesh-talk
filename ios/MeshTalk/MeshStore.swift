@@ -77,6 +77,16 @@ final class MeshStore: ObservableObject {
         }
     }
 
+    /// Sends an image, video, or voice note. Large attachments (especially video) may
+    /// not reliably arrive over many hops -- the mesh has no retransmission -- so this
+    /// works best for photos and short voice notes.
+    func sendFile(data: Data, fileName: String, mimeType: String, kind: AttachmentKind) {
+        guard let client else { return }
+        if !client.sendFile(data: data, fileName: fileName, mimeType: mimeType, kind: kind) {
+            lastError = "Failed to send attachment -- no reachable peers right now."
+        }
+    }
+
     private func startPolling() {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             self?.drainInbox()
