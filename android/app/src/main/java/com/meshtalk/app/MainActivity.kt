@@ -1,8 +1,11 @@
 package com.meshtalk.app
 
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
@@ -27,8 +30,19 @@ import uniffi.mesh_mobile.DiscoveredPeer
 class MainActivity : ComponentActivity() {
     private val store: MeshStore by viewModels()
 
+    // Android 13+ requires this to be granted at runtime for MeshForegroundService's
+    // persistent notification to actually show -- the service still gets foreground
+    // process priority (the whole point of it -- see its doc comment) even if this is
+    // denied, so this is purely about the visible "meshtalk is running" cue, not a
+    // hard requirement for the mesh node to keep working in the background.
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* no-op either way */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier) {

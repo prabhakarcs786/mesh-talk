@@ -51,24 +51,28 @@ class CallVideoCapture(private val context: Context, private val onEncodedFrame:
 
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
-            val provider = future.get()
-            cameraProvider = provider
-
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(view.surfaceProvider)
-            }
-            val analysis = ImageAnalysis.Builder()
-                .setTargetResolution(android.util.Size(320, 240))
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-            analysis.setAnalyzer(analysisExecutor) { image -> handleFrame(image) }
-
             try {
+                val provider = future.get()
+                cameraProvider = provider
+
+                val preview = Preview.Builder().build().also {
+                    it.setSurfaceProvider(view.surfaceProvider)
+                }
+                val analysis = ImageAnalysis.Builder()
+                    .setTargetResolution(android.util.Size(320, 240))
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                analysis.setAnalyzer(analysisExecutor) { image -> handleFrame(image) }
+
                 provider.unbindAll()
                 provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
             } catch (_: Exception) {
-                // No front camera, or binding failed -- video call proceeds audio-only
-                // from this side; the other side simply won't receive video frames.
+                // Camera provider init failed (future.get() threw), no front camera, or
+                // binding failed -- video call proceeds audio-only from this side; the
+                // other side simply won't receive video frames. This whole listener body
+                // (not just bindToLifecycle) must be guarded: future.get() itself can
+                // throw (e.g. ExecutionException) on devices/emulators whose camera HAL
+                // misreports its camera list, and that was previously uncaught here.
             }
         }, ContextCompat.getMainExecutor(context))
     }

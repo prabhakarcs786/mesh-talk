@@ -12,6 +12,16 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
+    <!-- Keeps the mesh node alive while backgrounded (see MeshForegroundService):
+         without this, Android suspends/kills the process and incoming messages/calls
+         are silently lost since this app has no push-notification service to wake it
+         back up (it's a fully offline P2P mesh). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Needed on Android 13+ for the foreground service's persistent notification to
+         actually be visible (the service still gets foreground process priority even
+         if this is denied, but the user loses the visible "meshtalk is running" cue). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -20,6 +30,11 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <service
+            android:name=".MeshForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <activity
             android:name=".MainActivity"

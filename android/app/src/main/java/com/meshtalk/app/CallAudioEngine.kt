@@ -34,9 +34,15 @@ class CallAudioEngine(private val onEncodedFrame: (Int, ByteArray) -> Unit) {
     /**
      * Starts capture/playback. Best-effort: if `RECORD_AUDIO` isn't granted (the
      * permission is requested by the call UI, but this can be invoked from the view
-     * model slightly before that completes), this just logs and leaves the engine
-     * inactive rather than crashing the call -- the caller can still see/hear the other
-     * side's video and won't lose the whole call over a timing race on permissions.
+     * model slightly before that completes), or if the device's audio HAL simply can't
+     * open the requested format/buffer size (seen in practice on some emulator images
+     * and some real devices -- `AudioRecord`/`AudioTrack` can be constructed without
+     * throwing yet left in `STATE_UNINITIALIZED`, and calling `startRecording()`/
+     * `play()` on that throws `IllegalStateException`, uncaught, which used to crash
+     * the whole call/app -- this is the "app has a bug, try clearing cache" crash
+     * reported when accepting an incoming call), this logs and leaves the engine
+     * inactive rather than crashing the call -- the caller can still see/hear the
+     * other side's video and won't lose the whole call over an audio-only failure.
      */
     @SuppressLint("MissingPermission")
     fun start() {
@@ -49,46 +55,73 @@ class CallAudioEngine(private val onEncodedFrame: (Int, ByteArray) -> Unit) {
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
             )
-            audioRecord = AudioRecord(
+            val record = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
                 maxOf(minRecordBuf, FRAME_BYTES * 4),
             )
-        } catch (e: SecurityException) {
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                record.release()
+                running = false
+                return
+            }
+            audioRecord = record
+
+            val minTrackBuf = AudioTrack.getMinBufferSize(
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+            )
+            val track = AudioTrack(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+                AudioFormat.Builder()
+                    .setSampleRate(SAMPLE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .build(),
+                maxOf(minTrackBuf, FRAME_BYTES * 4),
+                AudioTrack.MODE_STREAM,
+                AudioManager.AUDIO_SESSION_ID_GENERATE,
+            )
+            if (track.state != AudioTrack.STATE_INITIALIZED) {
+                track.release()
+                record.release()
+                audioRecord = null
+                running = false
+                return
+            }
+            audioTrack = track
+
+            record.startRecording()
+            track.play()
+        } catch (e: Exception) {
+            // Covers SecurityException (permission not yet granted), IllegalArgumentException
+            // (unsupported format/buffer size on this device's audio HAL), and
+            // IllegalStateException (startRecording()/play() called on a device that failed
+            // to fully initialize despite not throwing from its constructor) -- any of these
+            // must degrade to "no audio this call", never crash it.
+            try { audioRecord?.release() } catch (_: Exception) {}
+            try { audioTrack?.release() } catch (_: Exception) {}
+            audioRecord = null
+            audioTrack = null
             running = false
             return
         }
-
-        val minTrackBuf = AudioTrack.getMinBufferSize(
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-        )
-        audioTrack = AudioTrack(
-            AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build(),
-            AudioFormat.Builder()
-                .setSampleRate(SAMPLE_RATE)
-                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .build(),
-            maxOf(minTrackBuf, FRAME_BYTES * 4),
-            AudioTrack.MODE_STREAM,
-            AudioManager.AUDIO_SESSION_ID_GENERATE,
-        )
-
-        audioRecord?.startRecording()
-        audioTrack?.play()
 
         captureThread = thread(name = "meshtalk-call-audio-capture") {
             val buffer = ByteArray(FRAME_BYTES)
             while (running) {
                 val record = audioRecord ?: break
-                val read = record.read(buffer, 0, buffer.size)
+                val read = try {
+                    record.read(buffer, 0, buffer.size)
+                } catch (_: Exception) {
+                    break
+                }
                 if (read == buffer.size) {
                     onEncodedFrame(sequence, buffer.copyOf())
                     sequence++
@@ -99,7 +132,10 @@ class CallAudioEngine(private val onEncodedFrame: (Int, ByteArray) -> Unit) {
 
     /** Schedules one incoming frame (raw PCM in the same wire format) for playback. */
     fun play(data: ByteArray) {
-        audioTrack?.write(data, 0, data.size)
+        try {
+            audioTrack?.write(data, 0, data.size)
+        } catch (_: Exception) {
+        }
     }
 
     fun stop() {
@@ -107,11 +143,11 @@ class CallAudioEngine(private val onEncodedFrame: (Int, ByteArray) -> Unit) {
         running = false
         captureThread?.join(500)
         captureThread = null
-        audioRecord?.stop()
-        audioRecord?.release()
+        try { audioRecord?.stop() } catch (_: Exception) {}
+        try { audioRecord?.release() } catch (_: Exception) {}
         audioRecord = null
-        audioTrack?.stop()
-        audioTrack?.release()
+        try { audioTrack?.stop() } catch (_: Exception) {}
+        try { audioTrack?.release() } catch (_: Exception) {}
         audioTrack = null
     }
 }

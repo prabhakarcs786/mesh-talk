@@ -241,6 +241,11 @@ class MeshStore(application: Application) : AndroidViewModel(application) {
             messages.addAll(newClient.chatHistory())
             startPolling()
             startDiscoveryPolling()
+            // Keeps this whole process alive/responsive while the app is backgrounded
+            // -- see MeshForegroundService's doc comment for why this is required at
+            // all (no push-notification service exists to wake a backgrounded process
+            // back up for an incoming message/call in a fully offline P2P mesh).
+            MeshForegroundService.start(context)
         } catch (e: Exception) {
             Log.e("MeshStore", "start() failed", e)
             lastError = e.message ?: e.toString()
@@ -267,6 +272,19 @@ class MeshStore(application: Application) : AndroidViewModel(application) {
         pollJob = null
         discoveryJob?.cancel()
         discoveryJob = null
+        // Bug: previously this only dropped the Kotlin reference (`client = null`)
+        // without closing the underlying Rust object. UniFFI-generated objects are
+        // only freed when the JVM's garbage collector gets around to it -- which is
+        // non-deterministic and can take an arbitrary amount of time. In practice
+        // that left the old MeshClient's Tokio runtime (and the UDP socket it had
+        // bound) alive in the background, so an immediate "Restart" tapped right
+        // after "Stop" would fail with "Address already in use (os error 98)" trying
+        // to rebind the same port -- and, worse, the still-running old background
+        // receive loop and call-handling state could race with the new client's,
+        // which is a very plausible cause of the app crashing when receiving a call.
+        // MeshClient.close() (UniFFI's generated AutoCloseable/Disposable) frees the
+        // Rust side synchronously and is safe to call more than once.
+        client?.close()
         client = null
         isConnected = false
         discoveredPeers = emptyList()
@@ -277,6 +295,7 @@ class MeshStore(application: Application) : AndroidViewModel(application) {
         identityChangedPeerIds = emptySet()
         endActiveCallResources()
         callPhase = CallPhase.Idle
+        MeshForegroundService.stop(getApplication())
     }
 
     /** Sends a direct text message to one specific peer -- not a shared broadcast. */
