@@ -14,3 +14,4 @@ serde = { version = "1", features = ["derive"] }
 bincode = "1"
 blake3 = "1"
 socket2 = { version = "0.5", features = ["all"] }
+log = "0.4"

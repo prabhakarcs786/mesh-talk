@@ -8,13 +8,25 @@
 //! network round-trip -- similar in spirit to Bluetooth's numeric-comparison pairing: the
 //! user can glance at both screens and confirm they show the same number before trusting
 //! the connection, rather than blindly typing/trusting a bare IP address.
+//!
+//! # Milestone 2B.2: identity discovery
+//! Announcements also carry the sender's X25519 public key and its Ed25519 binding
+//! signature (see `mesh_core::identity::x25519_binding_payload`) -- this is what lets
+//! `MeshNode::send_text`/`send_file` ("MeshTalk Direct Encryption v1") actually be used
+//! for real mobile chats: without this, a device has no way to obtain a discovered
+//! peer's `PublicIdentity` at all. The binding is verified *before* an announcement is
+//! ever stored in `discovered_peers()` -- a malformed/invalid one is dropped outright,
+//! never surfaced to the caller. This proves cryptographic key ownership only; it does
+//! **not** mean the peer has been human-verified (that's a separate, later milestone --
+//! see `mesh_core::session::VerificationState`, which deliberately never travels over
+//! the wire).
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mesh_core::NodeId;
+use mesh_core::{NodeId, PublicIdentity, X25519Public, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
@@ -30,13 +42,27 @@ const EXPIRE_AFTER: Duration = Duration::from_secs(10);
 #[derive(Serialize, Deserialize)]
 struct Announcement {
     node_id: NodeId,
+    /// Untrusted, cosmetic name the peer advertises about itself -- see
+    /// `mesh_core::session::ContactRecord::advertised_name` for why this is never
+    /// treated as verified/trusted.
     display_name: String,
     /// Port the announcing node's `UdpTransport` is actually listening for messages on.
     service_port: u16,
+    x25519_public: X25519Public,
+    /// Ed25519 signature binding `x25519_public` to `node_id` -- see
+    /// `mesh_core::identity::x25519_binding_payload`. Verified before this announcement
+    /// is ever stored; see the listen loop in `LanDiscovery::start`.
+    x25519_signature: Vec<u8>,
+    /// This node's wire-format/session protocol capability -- lets a future version
+    /// gracefully handle talking to an older/newer peer instead of just guessing.
+    protocol_version: u8,
 }
 
 /// A nearby device found via LAN broadcast, ready to be added as a peer with one tap
-/// instead of typing its address.
+/// instead of typing its address. `public_identity`'s X25519 binding has *already been
+/// verified* by the time a `DiscoveredPeer` exists -- see the listen loop in
+/// `LanDiscovery::start`, which drops anything that doesn't verify before it's ever
+/// stored.
 #[derive(Clone, Debug)]
 pub struct DiscoveredPeer {
     pub node_id: NodeId,
@@ -46,6 +72,12 @@ pub struct DiscoveredPeer {
     /// Short numeric code, identical on both devices, for a Bluetooth-style "do these
     /// match?" visual confirmation before connecting.
     pub pairing_code: String,
+    /// This peer's cryptographic identity -- pass to `MeshNode::send_text`/`send_file`
+    /// to actually send them a "MeshTalk Direct Encryption v1" message. Already
+    /// binding-verified (see the struct doc), but **not** the same as human/contact
+    /// verification -- see the module doc.
+    pub public_identity: PublicIdentity,
+    pub protocol_version: u8,
     last_seen: Instant,
 }
 
@@ -57,10 +89,11 @@ impl LanDiscovery {
     /// Starts broadcasting this node's presence and listening for others. Runs forever in
     /// the background; drop the returned handle (or just let the app exit) to stop.
     pub async fn start(
-        local_node_id: NodeId,
+        local_identity: PublicIdentity,
         display_name: String,
         service_port: u16,
     ) -> anyhow::Result<Self> {
+        let local_node_id = local_identity.node_id;
         // Use socket2 (not tokio's plain UdpSocket::bind) so we can set SO_REUSEADDR/
         // SO_REUSEPORT before binding -- needed so multiple app instances on the *same*
         // machine (e.g. two iOS Simulators during development, or later a hosted test
@@ -86,6 +119,9 @@ impl LanDiscovery {
                 node_id: local_node_id,
                 display_name,
                 service_port,
+                x25519_public: local_identity.x25519_public,
+                x25519_signature: local_identity.x25519_signature.clone(),
+                protocol_version: PROTOCOL_VERSION,
             };
             let Ok(payload) = bincode::serialize(&announcement) else {
                 return;
@@ -122,14 +158,40 @@ impl LanDiscovery {
                     continue; // hearing our own broadcast, ignore
                 }
 
+                let public_identity = PublicIdentity {
+                    node_id: announcement.node_id,
+                    x25519_public: announcement.x25519_public,
+                    x25519_signature: announcement.x25519_signature,
+                };
+                // Reject a malformed/invalid identity outright -- never store it, even
+                // temporarily. This proves the X25519 key genuinely belongs to this
+                // NodeId's Ed25519 identity; it does not mean the NodeId itself belongs
+                // to whoever the display name claims (see the module doc).
+                if !public_identity.verify_binding() {
+                    log::warn!(
+                        "mesh-transport-udp: rejected discovery announcement from {} (node_id={}) -- invalid X25519 binding",
+                        from,
+                        mesh_core::short_id(&announcement.node_id)
+                    );
+                    continue;
+                }
+
                 let address = format!("{}:{}", from.ip(), announcement.service_port);
                 let pairing_code = pairing_code(&local_node_id, &announcement.node_id);
+                log::debug!(
+                    "mesh-transport-udp: discovered peer node_id={} address={} protocol_version={}",
+                    mesh_core::short_id(&announcement.node_id),
+                    address,
+                    announcement.protocol_version
+                );
 
                 let peer = DiscoveredPeer {
                     node_id: announcement.node_id,
                     display_name: announcement.display_name,
                     address,
                     pairing_code,
+                    public_identity,
+                    protocol_version: announcement.protocol_version,
                     last_seen: Instant::now(),
                 };
                 listen_seen.lock().unwrap().insert(announcement.node_id, peer);

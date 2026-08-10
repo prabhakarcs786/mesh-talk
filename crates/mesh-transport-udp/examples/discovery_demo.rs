@@ -3,7 +3,7 @@
 //!
 //!   cargo run -p mesh-transport-udp --example discovery_demo -- alice
 //!   cargo run -p mesh-transport-udp --example discovery_demo -- bob
-use mesh_core::{short_id, Identity};
+use mesh_core::{short_id, Identity, PublicIdentity};
 use mesh_transport_udp::LanDiscovery;
 
 #[tokio::main]
@@ -12,7 +12,7 @@ async fn main() -> anyhow::Result<()> {
     let identity = Identity::generate();
     println!("{name}: node id = {}", short_id(&identity.node_id()));
 
-    let discovery = LanDiscovery::start(identity.node_id(), name.clone(), 9001).await?;
+    let discovery = LanDiscovery::start(PublicIdentity::new(&identity), name.clone(), 9001).await?;
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;

@@ -65,4 +65,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
+    // Keystore-backed encrypted storage for the persistent identity seed (see
+    // IdentityStore.kt) -- so this device keeps the same NodeId across app restarts.
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }

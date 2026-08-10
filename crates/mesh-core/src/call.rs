@@ -4,13 +4,13 @@
 //! `payload.rs`/`reassembly.rs`, since a live call needs each frame delivered (or dropped)
 //! as soon as possible, not buffered until every piece of some larger transfer arrives.
 //!
-//! Unlike chat messages and file attachments (which are meant for everyone on the
-//! channel), every call message/frame carries an explicit `target` node id. A node that
-//! isn't the target still relays the packet onward as usual (so a call can, in
-//! principle, be set up and carried across multiple hops, same as everything else in
-//! this mesh) but doesn't otherwise act on it -- this keeps call audio/video from being
-//! decoded or surfaced to the UI on every device sharing the channel passphrase, even
-//! though (like the rest of the channel) they technically *could* decrypt it.
+//! Every call message/frame is addressed via the `Envelope`'s own `recipient` field (see
+//! `message.rs`), same as chat messages -- a node that isn't the recipient still relays
+//! the packet onward as usual (so a call can, in principle, be set up and carried across
+//! multiple hops, same as everything else in this mesh) but doesn't otherwise act on it.
+//! This keeps call audio/video from being decoded or surfaced to the UI on every device
+//! sharing the channel passphrase, even though (like the rest of the channel) they
+//! technically *could* decrypt it.
 //!
 //! There's no jitter buffer, no forward error correction, and no retransmission here --
 //! same trade-off as the rest of this mesh. A dropped frame is just a dropped frame (a
@@ -18,8 +18,6 @@
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-
-use crate::identity::NodeId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaKind {
@@ -64,19 +62,12 @@ pub struct CallFrame {
     pub data: Vec<u8>,
 }
 
-/// What's actually carried by an `AddressedCall`: either signaling or one media frame.
+/// What's actually carried for a call: either signaling or one media frame. Who it's
+/// addressed to lives on the `Envelope` itself (see `message.rs`), not here.
 #[derive(Clone, Serialize, Deserialize)]
 pub enum CallMessage {
     Signal(CallSignal),
     Frame(CallFrame),
-}
-
-/// A call-related message together with who it's addressed to -- this is the type that
-/// gets encrypted and flooded onto the mesh (see `MeshNode::call_invite` etc).
-#[derive(Clone, Serialize, Deserialize)]
-pub struct AddressedCall {
-    pub target: NodeId,
-    pub message: CallMessage,
 }
 
 /// A fresh random call id, unique enough to not collide between concurrent/sequential

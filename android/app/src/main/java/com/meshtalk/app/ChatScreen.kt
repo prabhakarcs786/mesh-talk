@@ -16,6 +16,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -127,6 +129,23 @@ private fun ConversationRow(store: MeshStore, peer: DiscoveredPeer, onClick: () 
                         .clip(CircleShape)
                         .background(if (online) Color(0xFF34C759) else MaterialTheme.colorScheme.outline),
                 )
+                if (store.identityChangedPeerIds.contains(peer.fullNodeId)) {
+                    Spacer(modifier = Modifier.padding(start = 4.dp))
+                    Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = "Identity changed",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(12.dp),
+                    )
+                } else if (store.isSecure(peer.fullNodeId)) {
+                    Spacer(modifier = Modifier.padding(start = 4.dp))
+                    Icon(
+                        Icons.Filled.Lock,
+                        contentDescription = "Secure",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(12.dp),
+                    )
+                }
             }
             Text(
                 store.lastMessagePreview(peer.fullNodeId) ?: "Say hello \uD83D\uDC4B",

@@ -9,12 +9,29 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 chacha20poly1305 = "0.10"
 blake3 = "1"
 rand = "0.8"
 async-trait = "0.1"
 anyhow = "1"
+# Pure logging facade (no-op unless a caller installs a `log::Log` implementation) --
+# used for diagnostic instrumentation of protocol decisions (packet accepted/rejected,
+# relayed, decrypted -- never plaintext, keys, or seeds). See node.rs/discovery for
+# what's actually logged.
+log = "0.4"
+# Milestone 2D: durable, restart-surviving replay protection (see
+# `replay_store.rs`). "bundled" compiles SQLite from source at build time instead of
+# requiring a system libsqlite3 -- needed for cross-compiling to iOS/Android targets,
+# which don't have one.
+rusqlite = { version = "0.31", features = ["bundled"] }
 # Only the "time" feature -- just for pacing chunk sends (see node.rs::broadcast_chunks).
 # Every caller of mesh-core's async fns already runs under a tokio runtime (mesh-cli,
 # mesh-mobile, mesh-transport-udp), so this doesn't add a new runtime dependency in practice.
 tokio = { version = "1", default-features = false, features = ["time"] }
+
+[dev-dependencies]
+# Full runtime + channels, only for tests (see node.rs's in-memory relay tests) -- kept
+# out of the main dependency so the production build stays on the minimal "time"-only
+# tokio above.
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }

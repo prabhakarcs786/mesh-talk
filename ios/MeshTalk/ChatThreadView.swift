@@ -87,6 +87,8 @@ struct ChatThreadView: View {
                         Text(store.isOnline(peer.fullNodeId) ? "Online" : "Offline")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                        Text("\u{00B7}").foregroundStyle(.secondary)
+                        securityBadge
                     }
                 }
             }
@@ -106,6 +108,42 @@ struct ChatThreadView: View {
                 .disabled(store.callPhase != .idle)
             }
         }
+        .alert("Security identity changed", isPresented: identityChangedBinding) {
+            Button("OK") { store.acknowledgeIdentityChange(for: peer.fullNodeId) }
+        } message: {
+            Text("\(peer.displayName)'s secure identity changed since you last talked. This could mean they reinstalled the app -- or it could mean someone else is impersonating them. Verify their identity again before trusting new messages.")
+        }
+    }
+
+    /// "MeshTalk Direct Encryption v1" is real, per-recipient authenticated encryption
+    /// once this device holds the peer's cryptographic identity -- but that's not the
+    /// same as *human* identity verification (a later QR/safety-number milestone), so
+    /// this deliberately says "Secure" (key ownership proven), not "Verified".
+    @ViewBuilder
+    private var securityBadge: some View {
+        if store.identityChangedPeerIds.contains(peer.fullNodeId) {
+            Label("Identity changed", systemImage: "exclamationmark.triangle.fill")
+                .labelStyle(.iconOnly)
+                .font(.caption2)
+                .foregroundStyle(.red)
+        } else if store.isSecure(peer.fullNodeId) {
+            Label("Secure", systemImage: "lock.fill")
+                .labelStyle(.iconOnly)
+                .font(.caption2)
+                .foregroundStyle(.green)
+        } else {
+            Label("Secure identity unavailable", systemImage: "lock.slash")
+                .labelStyle(.iconOnly)
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private var identityChangedBinding: Binding<Bool> {
+        Binding(
+            get: { store.identityChangedPeerIds.contains(peer.fullNodeId) },
+            set: { if !$0 { store.acknowledgeIdentityChange(for: peer.fullNodeId) } }
+        )
     }
 
     @ViewBuilder

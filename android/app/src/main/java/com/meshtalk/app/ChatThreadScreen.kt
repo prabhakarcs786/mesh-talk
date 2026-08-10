@@ -27,9 +27,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -38,6 +42,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -134,6 +139,8 @@ fun ChatThreadScreen(store: MeshStore, peer: DiscoveredPeer, onBack: () -> Unit,
                             if (online) "Online" else "Offline",
                             style = MaterialTheme.typography.labelSmall,
                         )
+                        Spacer(modifier = Modifier.padding(start = 4.dp))
+                        SecurityBadge(store = store, peer = peer)
                     }
                 }
             },
@@ -207,6 +214,62 @@ fun ChatThreadScreen(store: MeshStore, peer: DiscoveredPeer, onBack: () -> Unit,
             ) {
                 Text("Send")
             }
+        }
+    }
+
+    if (store.identityChangedPeerIds.contains(peer.fullNodeId)) {
+        AlertDialog(
+            onDismissRequest = { store.acknowledgeIdentityChange(peer.fullNodeId) },
+            title = { Text("Security identity changed") },
+            text = {
+                Text(
+                    "${peer.displayName}'s secure identity changed since you last talked. " +
+                        "This could mean they reinstalled the app -- or it could mean someone " +
+                        "else is impersonating them. Verify their identity again before " +
+                        "trusting new messages.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { store.acknowledgeIdentityChange(peer.fullNodeId) }) {
+                    Text("OK")
+                }
+            },
+        )
+    }
+}
+
+/**
+ * "MeshTalk Direct Encryption v1" is real, per-recipient authenticated encryption once
+ * this device holds the peer's cryptographic identity -- but that's not the same as
+ * *human* identity verification (a later QR/safety-number milestone), so this
+ * deliberately says "Secure" (key ownership proven), not "Verified".
+ */
+@Composable
+private fun SecurityBadge(store: MeshStore, peer: DiscoveredPeer) {
+    when {
+        store.identityChangedPeerIds.contains(peer.fullNodeId) -> {
+            Icon(
+                Icons.Filled.Warning,
+                contentDescription = "Identity changed",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+        store.isSecure(peer.fullNodeId) -> {
+            Icon(
+                Icons.Filled.Lock,
+                contentDescription = "Secure",
+                tint = Color(0xFF34C759),
+                modifier = Modifier.size(14.dp),
+            )
+        }
+        else -> {
+            Icon(
+                Icons.Filled.LockOpen,
+                contentDescription = "Secure identity unavailable",
+                tint = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.size(14.dp),
+            )
         }
     }
 }

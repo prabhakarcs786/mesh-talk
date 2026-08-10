@@ -45,6 +45,16 @@ final class MeshStore: ObservableObject {
     /// itself (see `EXPIRE_AFTER` in the Rust discovery code), even if we're still
     /// "connected" to its last-known address.
     @Published var onlinePeerIds: Set<String> = []
+    /// Every contact whose cryptographic identity (X25519 key, verified via its Ed25519
+    /// binding) is currently known -- keyed by full node id. This is what actually makes
+    /// `send`/`sendFile` work: unlike `onlinePeerIds`, this persists for a contact seen
+    /// earlier even after they stop broadcasting (e.g. they're offline right now), which
+    /// is what lets "MeshTalk Direct Encryption v1" messages still be created for them.
+    @Published var contacts: [String: ContactIdentity] = [:]
+    /// Full node ids whose cryptographic identity unexpectedly changed since it was
+    /// first seen -- surfaced prominently (never silently accepted) until the user
+    /// dismisses it. See `ContactEventKind.identityChanged`'s doc.
+    @Published var identityChangedPeerIds: Set<String> = []
     /// Live progress for attachments currently being sent or received, keyed by transfer
     /// id -- lets the chat view show a progress bar instead of the attachment appearing
     /// to do nothing until it's 100% there. Entries are removed once a send finishes, or
@@ -67,6 +77,55 @@ final class MeshStore: ObservableObject {
     private var callAudio: CallAudioEngine?
     private(set) var callVideo: CallVideoCapture?
 
+    /// Where the persistent contact cache (Milestone 2B.2a) is stored -- app-private
+    /// Application Support storage, which iOS backs up and never exposes to other apps.
+    /// A fixed, stable path (not tied to any particular `MeshClient` instance) so a
+    /// contact discovered before an app restart is still there afterward.
+    private var contactsDbPath: String {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("contacts.json").path
+    }
+
+    /// Where durable replay protection (Milestone 2D) is stored -- separate file from
+    /// `contactsDbPath`, same app-private directory. Without this, an attacker (or a
+    /// relay redelivering a held copy) could replay an already-processed message just
+    /// by waiting for this device to restart.
+    private var replayStorePath: String {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("replay-store.sqlite").path
+    }
+
+    /// Where this device's own not-yet-acknowledged outgoing reliable messages and
+    /// their retry/backoff state (Milestone 3A) are stored -- without this, a message
+    /// still waiting for an ack when the app is killed wouldn't resume retrying after
+    /// the next launch.
+    private var deliveryStorePath: String {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("delivery-store.sqlite").path
+    }
+
+    /// Where this device's per-neighbor relay-forwarding retry state (Milestone 3B) is
+    /// stored -- relevant whenever this device is relaying `DirectV1` traffic for other
+    /// devices on the mesh, not only when it's the sender/recipient.
+    private var forwardStorePath: String {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("forward-store.sqlite").path
+    }
+
+    /// Where every durably-accepted received message is stored (Milestone 3C) -- the
+    /// actual source of truth for chat history, not just an in-memory cache. An
+    /// authenticated delivery ack is only ever sent once a message has been durably
+    /// written here.
+    private var inboxStorePath: String {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("inbox-store.sqlite").path
+    }
+
     /// Starts a mesh node and immediately starts LAN auto-discovery so nearby devices
     /// running meshtalk on the same Wi-Fi network show up on their own -- connecting to
     /// one is then a single tap (`connect(to:)`) instead of typing an IP address.
@@ -78,13 +137,44 @@ final class MeshStore: ObservableObject {
                 listenAddr: "0.0.0.0:\(listenPort)",
                 peerAddrs: [],
                 channelPassphrase: channel,
-                ttl: 16
+                ttl: 16,
+                identitySeed: IdentityKeychain.loadSeed(),
+                contactsDbPath: contactsDbPath,
+                replayStorePath: replayStorePath,
+                deliveryStorePath: deliveryStorePath,
+                forwardStorePath: forwardStorePath,
+                inboxStorePath: inboxStorePath,
+                inboxStorageKey: IdentityKeychain.loadStorageKey()
             )
+            // Persist the seed regardless of whether it was just generated (first
+            // launch) or reused (every launch after) -- keeps this device's NodeId
+            // stable across restarts instead of silently becoming a new identity.
+            if let seedData = dataFromHex(newClient.identitySeed()) {
+                IdentityKeychain.saveSeed(seedData)
+            }
+            // Milestone 3C.1: same idempotent-every-launch persistence for the inbox
+            // at-rest storage key -- losing this makes previously-stored chat history
+            // permanently unreadable, so it must be saved immediately, not only on
+            // first-ever generation.
+            if let storageKeyData = dataFromHex(newClient.inboxStorageKey()) {
+                IdentityKeychain.saveStorageKey(storageKeyData)
+            }
             try newClient.startDiscovery()
             client = newClient
             nodeId = newClient.nodeId()
             isConnected = true
             lastError = nil
+            // Hydrate from whatever the persistent ContactStore already had on disk --
+            // e.g. a contact discovered before the app was last killed, or an
+            // identity-change warning the user hasn't acknowledged yet -- so both
+            // survive this restart instead of only reappearing once discovery happens
+            // to see that peer again.
+            let restoredContacts = newClient.contacts()
+            contacts = Dictionary(uniqueKeysWithValues: restoredContacts.map { ($0.fullNodeId, $0) })
+            identityChangedPeerIds = Set(restoredContacts.filter { $0.identityChangePending }.map { $0.fullNodeId })
+            // Milestone 3C: chat history lives in the durable inbox, not an in-memory
+            // list -- hydrate it from disk instead of starting empty every launch.
+            messages = newClient.chatHistory()
             startPolling()
             startDiscoveryPolling()
         } catch {
@@ -118,6 +208,9 @@ final class MeshStore: ObservableObject {
         discoveredPeers = []
         connectedAddresses = []
         connectedPeers = [:]
+        onlinePeerIds = []
+        contacts = [:]
+        identityChangedPeerIds = []
         endActiveCallResources()
         callPhase = .idle
     }
@@ -125,11 +218,18 @@ final class MeshStore: ObservableObject {
     func send(_ text: String, to peerId: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let client, !trimmed.isEmpty else { return }
-        if !client.send(remoteNodeId: peerId, text: text) {
-            lastError = "Failed to send -- no reachable peers right now."
-            return
+        switch client.send(remoteNodeId: peerId, text: text) {
+        case .sent:
+            messages.append(ReceivedMessage(peerId: peerId, senderId: ownMessageSenderId, messageId: UUID().uuidString, text: trimmed, attachment: nil))
+        case .tooLongForReliableText:
+            // Milestone 3C: never silently downgrade to a weaker delivery guarantee --
+            // tell the user instead of quietly sending best-effort.
+            lastError = "Message too long to send reliably -- try a shorter message."
+        case .failed:
+            lastError = isSecure(peerId)
+                ? "Failed to send -- no reachable peers right now."
+                : "Secure identity unavailable for this contact -- can't send yet."
         }
-        messages.append(ReceivedMessage(peerId: peerId, senderId: ownMessageSenderId, text: trimmed, attachment: nil))
     }
 
     /// Sends an image, video, or voice note. Large attachments (especially video) may
@@ -138,11 +238,23 @@ final class MeshStore: ObservableObject {
     func sendFile(data: Data, fileName: String, mimeType: String, kind: AttachmentKind, to peerId: String) {
         guard let client else { return }
         if !client.sendFile(remoteNodeId: peerId, data: data, fileName: fileName, mimeType: mimeType, kind: kind) {
-            lastError = "Failed to send attachment -- no reachable peers right now."
+            lastError = isSecure(peerId)
+                ? "Failed to send attachment -- no reachable peers right now."
+                : "Secure identity unavailable for this contact -- can't send yet."
             return
         }
         let attachment = FileAttachment(transferId: "", kind: kind, name: fileName, mime: mimeType, data: data)
-        messages.append(ReceivedMessage(peerId: peerId, senderId: ownMessageSenderId, text: nil, attachment: attachment))
+        messages.append(ReceivedMessage(peerId: peerId, senderId: ownMessageSenderId, messageId: UUID().uuidString, text: nil, attachment: attachment))
+    }
+
+    /// Whether this device currently holds a verified cryptographic identity for
+    /// `peerId` -- i.e. whether "MeshTalk Direct Encryption v1" can actually be used to
+    /// message them right now (their binding was checked before being cached; see
+    /// `mesh_transport_udp::discovery`'s doc). `false` means messages to them will fail
+    /// closed rather than send -- the UI should show something like "Secure identity
+    /// unavailable" rather than a generic send failure.
+    func isSecure(_ peerId: String) -> Bool {
+        contacts[peerId] != nil
     }
 
     /// All messages exchanged with one specific conversation partner, in the order they
@@ -311,6 +423,33 @@ final class MeshStore: ObservableObject {
         guard let client else { return }
         discoveredPeers = client.discoveredPeers()
         onlinePeerIds = Set(discoveredPeers.map { $0.fullNodeId })
+        drainContactEvents()
+    }
+
+    /// Drains new-contact/identity-change news (see `ContactEvent`) and keeps `contacts`
+    /// in sync with the Rust-side cache -- called right after `discoveredPeers()` since
+    /// that's what actually updates the cache on the Rust side.
+    private func drainContactEvents() {
+        guard let client else { return }
+        var sawChangeOrNewContact = false
+        while let event = client.pollContactEvent() {
+            sawChangeOrNewContact = true
+            if case .identityChanged = event.kind {
+                identityChangedPeerIds.insert(event.fullNodeId)
+            }
+        }
+        if sawChangeOrNewContact {
+            contacts = Dictionary(uniqueKeysWithValues: client.contacts().map { ($0.fullNodeId, $0) })
+        }
+    }
+
+    /// Call after showing an "identity changed" warning to the user, so it doesn't keep
+    /// reappearing for the same contact once acknowledged. Persists immediately via the
+    /// Rust-side `ContactStore` so the acknowledgement itself survives a restart too --
+    /// otherwise the warning would come back every time the app relaunches.
+    func acknowledgeIdentityChange(for peerId: String) {
+        identityChangedPeerIds.remove(peerId)
+        _ = client?.acknowledgeIdentityChange(remoteNodeId: peerId)
     }
 
     private func drainInbox() {
@@ -325,6 +464,9 @@ final class MeshStore: ObservableObject {
                 removeActiveTransfer(transferId)
                 justCompleted.insert(transferId)
             }
+            // Milestone 3C: `mesh-core` already durably persisted this message (to
+            // `inboxStorePath`) and, for a `DirectV1` message, already acknowledged it
+            // to the sender -- there is nothing left to do here to make it durable.
             messages.append(message)
         }
         while let progress = client.pollTransferProgress() {

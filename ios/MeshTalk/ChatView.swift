@@ -81,6 +81,15 @@ struct ChatView: View {
                     Circle()
                         .fill(store.isOnline(peer.fullNodeId) ? Color.green : Color.secondary.opacity(0.4))
                         .frame(width: 7, height: 7)
+                    if store.identityChangedPeerIds.contains(peer.fullNodeId) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    } else if store.isSecure(peer.fullNodeId) {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Text(store.lastMessagePreview(with: peer.fullNodeId) ?? "Say hello \u{1F44B}")
                     .font(.caption)

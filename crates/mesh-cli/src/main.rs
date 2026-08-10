@@ -71,7 +71,9 @@ async fn main() -> anyhow::Result<()> {
         loop {
             match node_for_recv.recv_raw().await {
                 Ok(raw) => match node_for_recv.handle_incoming(raw).await {
-                    Ok(Some(mesh_core::IncomingEvent::Content(sender, content))) => match content {
+                    Ok(Some(mesh_core::IncomingEvent::Content(delivered))) => {
+                        let sender = delivered.sender;
+                        match delivered.content {
                         mesh_core::ReceivedContent::Text(text) => {
                             println!("[{}] {}", short_id(&sender), text);
                         }
@@ -82,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
                                 data.len()
                             );
                         }
-                    },
+                    }},
                     Ok(Some(mesh_core::IncomingEvent::Progress(sender, progress))) => {
                         // Only print occasionally so a multi-thousand-chunk transfer doesn't
                         // spam the terminal with a line per chunk.
@@ -116,9 +118,25 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Task 3: periodically retry forwarding any relayed message that hasn't yet reached
+    // every neighbor known when it first arrived (Milestone 3B -- see
+    // `mesh_core::forward_store`'s doc). The CLI demo only ever *originates* best-effort
+    // broadcasts (no reliable ACK/retry for those -- see `send_reliable_text`'s doc for
+    // why that's a `DirectV1`-only concept), but any node can still be relaying
+    // `DirectV1` traffic for other devices on the mesh, so this still matters here.
+    let node_for_forward_retry = node.clone();
+    let forward_retry_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            node_for_forward_retry.retry_pending_forwards().await;
+        }
+    });
+
     tokio::select! {
         _ = stdin_task => {}
         _ = recv_task => {}
+        _ = forward_retry_task => {}
     }
 
     Ok(())

@@ -1,11 +1,12 @@
 package com.meshtalk.app
 
+import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -16,10 +17,13 @@ import uniffi.mesh_mobile.AttachmentKind
 import uniffi.mesh_mobile.CallEvent
 import uniffi.mesh_mobile.CallEventKind
 import uniffi.mesh_mobile.CallMediaKind
+import uniffi.mesh_mobile.ContactEventKind
+import uniffi.mesh_mobile.ContactIdentity
 import uniffi.mesh_mobile.DiscoveredPeer
 import uniffi.mesh_mobile.FileAttachment
 import uniffi.mesh_mobile.MeshClient
 import uniffi.mesh_mobile.ReceivedMessage
+import uniffi.mesh_mobile.SendOutcome
 import uniffi.mesh_mobile.TransferProgressUpdate
 
 /**
@@ -52,7 +56,7 @@ sealed class CallPhase {
  * a coroutine loop since UniFFI's `pollMessage()` is a plain non-blocking call, not a
  * stream/callback. Mirrors `ios/MeshTalk/MeshStore.swift`.
  */
-class MeshStore : ViewModel() {
+class MeshStore(application: Application) : AndroidViewModel(application) {
     var isConnected by mutableStateOf(false)
         private set
     var nodeId by mutableStateOf("")
@@ -72,6 +76,23 @@ class MeshStore : ViewModel() {
      * closed the app), which is what drives the online/offline indicator per contact.
      */
     var onlinePeerIds by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    /**
+     * Every contact whose cryptographic identity (X25519 key, verified via its Ed25519
+     * binding) is currently known, keyed by full node id. This is what actually makes
+     * [send]/[sendFile] work: unlike [onlinePeerIds], this persists for a contact seen
+     * earlier even after they stop broadcasting (e.g. they're offline right now), which
+     * is what lets "MeshTalk Direct Encryption v1" messages still be created for them.
+     */
+    val contacts = mutableStateMapOf<String, ContactIdentity>()
+
+    /**
+     * Full node ids whose cryptographic identity unexpectedly changed since it was first
+     * seen -- surfaced prominently (never silently accepted) until the user dismisses
+     * it. See [uniffi.mesh_mobile.ContactEventKind.IDENTITY_CHANGED].
+     */
+    var identityChangedPeerIds by mutableStateOf<Set<String>>(emptySet())
         private set
 
     /**
@@ -103,6 +124,60 @@ class MeshStore : ViewModel() {
     private var callAudio: CallAudioEngine? = null
 
     /**
+     * Where the persistent contact cache (Milestone 2B.2a) is stored -- the app's
+     * internal (app-private) files directory, which Android never exposes to other
+     * apps. A fixed, stable path (not tied to any particular [MeshClient] instance) so
+     * a contact discovered before an app restart is still there afterward.
+     */
+    private fun contactsDbPath(): String {
+        val context = getApplication<Application>()
+        return java.io.File(context.filesDir, "contacts.json").absolutePath
+    }
+
+    /**
+     * Where durable replay protection (Milestone 2D) is stored -- separate file from
+     * [contactsDbPath], same app-private directory. Without this, an attacker (or a
+     * relay redelivering a held copy) could replay an already-processed message just
+     * by waiting for this device to restart.
+     */
+    private fun replayStorePath(): String {
+        val context = getApplication<Application>()
+        return java.io.File(context.filesDir, "replay-store.sqlite").absolutePath
+    }
+
+    /**
+     * Where this device's own not-yet-acknowledged outgoing reliable messages and
+     * their retry/backoff state (Milestone 3A) are stored -- without this, a message
+     * still waiting for an ack when the app is killed wouldn't resume retrying after
+     * the next launch.
+     */
+    private fun deliveryStorePath(): String {
+        val context = getApplication<Application>()
+        return java.io.File(context.filesDir, "delivery-store.sqlite").absolutePath
+    }
+
+    /**
+     * Where this device's per-neighbor relay-forwarding retry state (Milestone 3B) is
+     * stored -- relevant whenever this device is relaying `DirectV1` traffic for other
+     * devices on the mesh, not only when it's the sender/recipient.
+     */
+    private fun forwardStorePath(): String {
+        val context = getApplication<Application>()
+        return java.io.File(context.filesDir, "forward-store.sqlite").absolutePath
+    }
+
+    /**
+     * Where every durably-accepted received message is stored (Milestone 3C) -- the
+     * actual source of truth for chat history, not just an in-memory cache. An
+     * authenticated delivery ack is only ever sent once a message has been durably
+     * written here.
+     */
+    private fun inboxStorePath(): String {
+        val context = getApplication<Application>()
+        return java.io.File(context.filesDir, "inbox-store.sqlite").absolutePath
+    }
+
+    /**
      * Starts a mesh node and immediately starts LAN auto-discovery, so nearby devices
      * running meshtalk on the same Wi-Fi network show up on their own -- connecting to
      * one is then a single tap ([connect]) instead of typing an IP address.
@@ -110,18 +185,50 @@ class MeshStore : ViewModel() {
     fun start(displayName: String, listenPort: Int, channel: String) {
         disconnect()
         try {
+            val context = getApplication<Application>()
             val newClient = MeshClient(
                 displayName = displayName,
                 listenAddr = "0.0.0.0:$listenPort",
                 peerAddrs = emptyList(),
                 channelPassphrase = channel,
                 ttl = 16u,
+                identitySeed = IdentityStore.loadSeed(context),
+                contactsDbPath = contactsDbPath(),
+                replayStorePath = replayStorePath(),
+                deliveryStorePath = deliveryStorePath(),
+                forwardStorePath = forwardStorePath(),
+                inboxStorePath = inboxStorePath(),
+                inboxStorageKey = IdentityStore.loadStorageKey(context),
             )
+            // Persist the seed regardless of whether it was just generated (first
+            // launch) or reused (every launch after) -- keeps this device's NodeId
+            // stable across restarts instead of silently becoming a new identity.
+            byteArrayFromHex(newClient.identitySeed())?.let { IdentityStore.saveSeed(context, it) }
+            // Milestone 3C.1: same idempotent-every-launch persistence for the inbox
+            // at-rest storage key -- losing this makes previously-stored chat history
+            // permanently unreadable, so it must be saved immediately, not only on
+            // first-ever generation.
+            byteArrayFromHex(newClient.inboxStorageKey())?.let { IdentityStore.saveStorageKey(context, it) }
             newClient.startDiscovery()
             client = newClient
             nodeId = newClient.nodeId()
             isConnected = true
             lastError = null
+            // Hydrate from whatever the persistent ContactStore already had on disk --
+            // e.g. a contact discovered before the app was last killed, or an
+            // identity-change warning the user hasn't acknowledged yet -- so both
+            // survive this restart instead of only reappearing once discovery happens
+            // to see that peer again.
+            val restoredContacts = newClient.contacts()
+            contacts.clear()
+            for (contact in restoredContacts) {
+                contacts[contact.fullNodeId] = contact
+            }
+            identityChangedPeerIds = restoredContacts.filter { it.identityChangePending }.map { it.fullNodeId }.toSet()
+            // Milestone 3C: chat history lives in the durable inbox, not an in-memory
+            // list -- hydrate it from disk instead of starting empty every launch.
+            messages.clear()
+            messages.addAll(newClient.chatHistory())
             startPolling()
             startDiscoveryPolling()
         } catch (e: Exception) {
@@ -155,6 +262,8 @@ class MeshStore : ViewModel() {
         connectedAddresses.clear()
         connectedPeers.clear()
         onlinePeerIds = emptySet()
+        contacts.clear()
+        identityChangedPeerIds = emptySet()
         endActiveCallResources()
         callPhase = CallPhase.Idle
     }
@@ -163,11 +272,19 @@ class MeshStore : ViewModel() {
     fun send(text: String, peerId: String) {
         val current = client ?: return
         if (text.isBlank()) return
-        if (!current.send(peerId, text)) {
-            lastError = "Failed to send -- no reachable peers right now."
-            return
+        when (current.send(peerId, text)) {
+            SendOutcome.SENT -> messages.add(ReceivedMessage(peerId, OWN_MESSAGE_SENDER_ID, java.util.UUID.randomUUID().toString(), text, null))
+            SendOutcome.TOO_LONG_FOR_RELIABLE_TEXT ->
+                // Milestone 3C: never silently downgrade to a weaker delivery
+                // guarantee -- tell the user instead of quietly sending best-effort.
+                lastError = "Message too long to send reliably -- try a shorter message."
+            SendOutcome.FAILED ->
+                lastError = if (isSecure(peerId)) {
+                    "Failed to send -- no reachable peers right now."
+                } else {
+                    "Secure identity unavailable for this contact -- can't send yet."
+                }
         }
-        messages.add(ReceivedMessage(peerId, OWN_MESSAGE_SENDER_ID, text, null))
     }
 
     /**
@@ -178,11 +295,35 @@ class MeshStore : ViewModel() {
     fun sendFile(data: ByteArray, fileName: String, mimeType: String, kind: AttachmentKind, peerId: String) {
         val current = client ?: return
         if (!current.sendFile(peerId, data, fileName, mimeType, kind)) {
-            lastError = "Failed to send attachment -- no reachable peers right now."
+            lastError = if (isSecure(peerId)) {
+                "Failed to send attachment -- no reachable peers right now."
+            } else {
+                "Secure identity unavailable for this contact -- can't send yet."
+            }
             return
         }
         val attachment = FileAttachment("", kind, fileName, mimeType, data)
-        messages.add(ReceivedMessage(peerId, OWN_MESSAGE_SENDER_ID, null, attachment))
+        messages.add(ReceivedMessage(peerId, OWN_MESSAGE_SENDER_ID, java.util.UUID.randomUUID().toString(), null, attachment))
+    }
+
+    /**
+     * Whether this device currently holds a verified cryptographic identity for
+     * [peerId] -- i.e. whether "MeshTalk Direct Encryption v1" can actually be used to
+     * message them right now. `false` means messages to them will fail closed rather
+     * than send -- the UI should show something like "Secure identity unavailable"
+     * rather than a generic send failure.
+     */
+    fun isSecure(peerId: String): Boolean = contacts.containsKey(peerId)
+
+    /**
+     * Call after showing an "identity changed" warning, so it stops reappearing.
+     * Persists immediately via the Rust-side `ContactStore` so the acknowledgement
+     * itself survives a restart too -- otherwise the warning would come back every time
+     * the app relaunches.
+     */
+    fun acknowledgeIdentityChange(peerId: String) {
+        identityChangedPeerIds = identityChangedPeerIds - peerId
+        client?.acknowledgeIdentityChange(peerId)
     }
 
     /** Messages exchanged with just this one peer, in arrival order. */
@@ -349,6 +490,10 @@ class MeshStore : ViewModel() {
                         removeActiveTransfer(it)
                         justCompleted.add(it)
                     }
+                    // Milestone 3C: `mesh-core` already durably persisted this message
+                    // (to `inboxStorePath`) and, for a `DirectV1` message, already
+                    // acknowledged it to the sender -- there is nothing left to do here
+                    // to make it durable.
                     messages.add(message)
                 }
                 while (true) {
@@ -392,8 +537,32 @@ class MeshStore : ViewModel() {
                     val peers = withContext(Dispatchers.IO) { current.discoveredPeers() }
                     discoveredPeers = peers
                     onlinePeerIds = peers.map { it.fullNodeId }.toSet()
+                    drainContactEvents(current)
                 }
                 delay(1500)
+            }
+        }
+    }
+
+    /**
+     * Drains new-contact/identity-change news and keeps [contacts] in sync with the
+     * Rust-side cache -- called right after `discoveredPeers()` since that's what
+     * actually updates the cache on the Rust side.
+     */
+    private suspend fun drainContactEvents(client: MeshClient) {
+        var sawChangeOrNewContact = false
+        while (true) {
+            val event = withContext(Dispatchers.IO) { client.pollContactEvent() } ?: break
+            sawChangeOrNewContact = true
+            if (event.kind == ContactEventKind.IDENTITY_CHANGED) {
+                identityChangedPeerIds = identityChangedPeerIds + event.fullNodeId
+            }
+        }
+        if (sawChangeOrNewContact) {
+            val updated = withContext(Dispatchers.IO) { client.contacts() }
+            contacts.clear()
+            for (contact in updated) {
+                contacts[contact.fullNodeId] = contact
             }
         }
     }

@@ -8,16 +8,34 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::call::AddressedCall;
-use crate::identity::NodeId;
+use crate::call::CallMessage;
 
 /// What's actually encrypted and put in an `Envelope`'s ciphertext: either one chunk of a
-/// chat message/file transfer (reassembled via `reassembly.rs`), or a call signaling
-/// message/media frame (handled directly, no reassembly -- see `call.rs`).
+/// chat message/file transfer (reassembled via `reassembly.rs`), a call signaling
+/// message/media frame (handled directly, no reassembly -- see `call.rs`), or a
+/// Milestone 3A delivery receipt (see `DeliveryAck`). Who it's addressed to lives on the
+/// `Envelope` itself (see `message.rs`), not here.
 #[derive(Clone, Serialize, Deserialize)]
 pub enum WirePayload {
     Chunk(Chunk),
-    Call(AddressedCall),
+    Call(CallMessage),
+    DeliveryAck(DeliveryAck),
+}
+
+/// Milestone 3C: an authenticated receipt meaning "the final recipient durably accepted
+/// this specific message" -- see `inbox_store.rs`'s module doc for exactly what
+/// "durably accepted" means and why this is only ever sent after `InboxStore` durably
+/// commits the content, never merely because AEAD decryption succeeded. Travels back to
+/// the original sender the same way any other DirectV1 message does (signed envelope,
+/// per-recipient session encryption), so a forged or misattributed ack is rejected the
+/// same way a forged chat message would be.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DeliveryAck {
+    /// The `message_id` (see `message::Envelope::message_id`) of the message being
+    /// acknowledged -- paired with the *acking* envelope's own `sender` field (checked
+    /// by the receiver of this ack against its own delivery-store record) so an ack
+    /// can't be misapplied to the wrong sender/message pair.
+    pub acked_message_id: [u8; 16],
 }
 
 
@@ -34,17 +52,10 @@ pub enum ContentKind {
 
 /// Bytes belonging to one chunk of a transfer, plus enough metadata (repeated on every
 /// chunk, since it's cheap) to reassemble and label the whole transfer once all chunks
-/// have arrived.
+/// have arrived. Who it's addressed to lives on the `Envelope` itself (see
+/// `message.rs`), not here.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Chunk {
-    /// Who this message/attachment is addressed to -- like calls (see `call.rs`), a
-    /// direct message to one specific conversation partner rather than a broadcast to
-    /// everyone on the channel. Nodes that aren't the target still relay it onward (so
-    /// conversations can, in principle, reach someone multiple hops away) but don't
-    /// otherwise surface it -- this is what makes per-contact chat threads possible
-    /// instead of one shared channel-wide feed. `None` means "everyone on the channel"
-    /// (the original broadcast behavior, still used by the `mesh-cli` demo).
-    pub target: Option<NodeId>,
     pub transfer_id: [u8; 16],
     pub chunk_index: u32,
     pub chunk_count: u32,
@@ -55,7 +66,10 @@ pub struct Chunk {
     pub data: Vec<u8>,
 }
 
-/// Fully reassembled content, ready to hand to the application layer.
+/// Fully reassembled content, ready to hand to the application layer. `Clone` +
+/// `Serialize`/`Deserialize` so it can be durably persisted verbatim (see
+/// `inbox_store.rs`, Milestone 3C) rather than only ever living in memory.
+#[derive(Clone, Serialize, Deserialize)]
 pub enum ReceivedContent {
     Text(String),
     File {
@@ -97,11 +111,10 @@ impl TransferProgress {
 /// this to work best for images and short voice notes today).
 pub const CHUNK_SIZE: usize = 1024;
 
-/// Splits raw bytes into the chunks for one transfer with a freshly-generated transfer id,
-/// addressed to `target` (the one conversation partner who should act on it), or `None`
-/// to broadcast to everyone on the channel.
+/// Splits raw bytes into the chunks for one transfer with a freshly-generated transfer
+/// id. Who it's addressed to is a separate, envelope-level concern (see `message.rs`,
+/// `MeshNode::send_text`/`send_file`), not part of the chunk itself.
 pub fn split_into_chunks(
-    target: Option<NodeId>,
     kind: ContentKind,
     file_name: Option<String>,
     mime_type: Option<String>,
@@ -122,7 +135,6 @@ pub fn split_into_chunks(
         .into_iter()
         .enumerate()
         .map(|(i, piece)| Chunk {
-            target,
             transfer_id,
             chunk_index: i as u32,
             chunk_count,
