@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Adaptive icon background: a flat mid-tone from the launcher icon's
+         indigo-to-purple gradient, used as the background layer (see
+         mipmap-anydpi-v26/ic_launcher.xml). -->
+    <color name="ic_launcher_background">#5E45C7</color>
+</resources>
