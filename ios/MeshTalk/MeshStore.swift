@@ -132,7 +132,13 @@ final class MeshStore: ObservableObject {
     func start(displayName: String, listenPort: UInt16, channel: String) {
         disconnect()
         do {
-            let newClient = try MeshClient(
+            // Milestone: bundled into a single `MeshClientConfig` record (rather than
+            // one constructor parameter per field) to work around a known, unresolved
+            // upstream uniffi-rs/JNA bug that corrupts many-struct-by-value native
+            // calls on Android -- see the doc comment on `MeshClientConfig` in
+            // crates/mesh-mobile/src/lib.rs. iOS was never affected by that bug (Swift
+            // doesn't go through JNA), but both platforms share this one API.
+            let newClient = try MeshClient(config: MeshClientConfig(
                 displayName: displayName,
                 listenAddr: "0.0.0.0:\(listenPort)",
                 peerAddrs: [],
@@ -145,7 +151,7 @@ final class MeshStore: ObservableObject {
                 forwardStorePath: forwardStorePath,
                 inboxStorePath: inboxStorePath,
                 inboxStorageKey: IdentityKeychain.loadStorageKey()
-            )
+            ))
             // Persist the seed regardless of whether it was just generated (first
             // launch) or reused (every launch after) -- keeps this device's NodeId
             // stable across restarts instead of silently becoming a new identity.

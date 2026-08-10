@@ -507,9 +507,54 @@ const CALL_EVENT_CAPACITY: usize = 100;
 /// old, stale audio/video frames aren't worth keeping around anyway.
 const CALL_FRAME_CAPACITY: usize = 500;
 
+/// Configuration for [`MeshClient::new`], bundled into a single UniFFI record instead of
+/// many individual constructor parameters.
+///
+/// # Why a record and not separate parameters
+/// This constructor used to take 12 individual parameters (11 of them non-primitive --
+/// `String`/`Vec<String>`/`Option<String>`/`Option<Vec<u8>>`). On Android, each
+/// non-primitive UniFFI argument is lowered into its own `RustBuffer` struct and passed
+/// to the native library as a separate struct-by-value parameter via JNA. This triggers
+/// a known, unresolved upstream bug where JNA corrupts struct-by-value marshaling on
+/// Android ARM64 when a single native call has many such parameters, surfacing as
+/// `RustBuffer length exceeds capacity` / `null RustBuffer had non-zero capacity` --
+/// see <https://github.com/mozilla/uniffi-rs/issues/2624> (confirmed by multiple
+/// unrelated projects: Wire, Proton Mail, chaintope/rust-tapyrus-wallet-ffi,
+/// worldcoin/bedrock -- the uniffi-rs maintainers have no fix yet, only a long-term
+/// plan to stop using JNA for structs). Bundling everything into one `Record` means
+/// exactly one `RustBuffer` crosses the FFI boundary for this call instead of eleven,
+/// which avoids the trigger condition. Swift/iOS was never affected (it doesn't go
+/// through JNA), but both platforms use this same constructor for one shared API.
+#[derive(uniffi::Record)]
+pub struct MeshClientConfig {
+    pub display_name: String,
+    pub listen_addr: String,
+    pub peer_addrs: Vec<String>,
+    pub channel_passphrase: String,
+    pub ttl: u8,
+    #[uniffi(default = None)]
+    pub identity_seed: Option<Vec<u8>>,
+    #[uniffi(default = None)]
+    pub contacts_db_path: Option<String>,
+    #[uniffi(default = None)]
+    pub replay_store_path: Option<String>,
+    #[uniffi(default = None)]
+    pub delivery_store_path: Option<String>,
+    #[uniffi(default = None)]
+    pub forward_store_path: Option<String>,
+    #[uniffi(default = None)]
+    pub inbox_store_path: Option<String>,
+    #[uniffi(default = None)]
+    pub inbox_storage_key: Option<Vec<u8>>,
+}
+
 #[uniffi::export]
 impl MeshClient {
     /// Starts a new mesh node.
+    ///
+    /// All fields below are documented on [`MeshClientConfig`]'s individual fields;
+    /// this constructor takes a single `config: MeshClientConfig` argument (see that
+    /// type's doc comment for why) rather than one parameter per field:
     ///
     /// - `display_name`: shown alongside your messages.
     /// - `listen_addr`: local address to listen on, e.g. "0.0.0.0:9001".
@@ -566,20 +611,21 @@ impl MeshClient {
     ///   makes any previously-stored chat history permanently unreadable (see
     ///   `InboxStore`'s doc on a wrong/missing key failing closed).
     #[uniffi::constructor]
-    pub fn new(
-        display_name: String,
-        listen_addr: String,
-        peer_addrs: Vec<String>,
-        channel_passphrase: String,
-        ttl: u8,
-        identity_seed: Option<Vec<u8>>,
-        contacts_db_path: Option<String>,
-        replay_store_path: Option<String>,
-        delivery_store_path: Option<String>,
-        forward_store_path: Option<String>,
-        inbox_store_path: Option<String>,
-        inbox_storage_key: Option<Vec<u8>>,
-    ) -> Result<Arc<Self>, MeshError> {
+    pub fn new(config: MeshClientConfig) -> Result<Arc<Self>, MeshError> {
+        let MeshClientConfig {
+            display_name,
+            listen_addr,
+            peer_addrs,
+            channel_passphrase,
+            ttl,
+            identity_seed,
+            contacts_db_path,
+            replay_store_path,
+            delivery_store_path,
+            forward_store_path,
+            inbox_store_path,
+            inbox_storage_key,
+        } = config;
         init_logging();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -1289,20 +1335,20 @@ mod tests {
         let peer_node_id = peer_identity.node_id();
 
         {
-            let client = MeshClient::new(
-                "Alice".to_string(),
-                "127.0.0.1:0".to_string(),
-                vec![],
-                "test-channel".to_string(),
-                8,
-                Some(seed.clone()),
-                Some(db_path.clone()),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
+            let client = MeshClient::new(MeshClientConfig {
+                display_name: "Alice".to_string(),
+                listen_addr: "127.0.0.1:0".to_string(),
+                peer_addrs: vec![],
+                channel_passphrase: "test-channel".to_string(),
+                ttl: 8,
+                identity_seed: Some(seed.clone()),
+                contacts_db_path: Some(db_path.clone()),
+                replay_store_path: None,
+                delivery_store_path: None,
+                forward_store_path: None,
+                inbox_store_path: None,
+                inbox_storage_key: None,
+            })
             .unwrap();
 
             // Simulates what `update_contact_cache` would do for a freshly-discovered
@@ -1323,20 +1369,20 @@ mod tests {
 
         // A brand new `MeshClient` -- as if the app just relaunched -- reusing the same
         // identity seed and, crucially, the same `contacts_db_path`.
-        let restarted = MeshClient::new(
-            "Alice".to_string(),
-            "127.0.0.1:0".to_string(),
-            vec![],
-            "test-channel".to_string(),
-            8,
-            Some(seed),
-            Some(db_path),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let restarted = MeshClient::new(MeshClientConfig {
+            display_name: "Alice".to_string(),
+            listen_addr: "127.0.0.1:0".to_string(),
+            peer_addrs: vec![],
+            channel_passphrase: "test-channel".to_string(),
+            ttl: 8,
+            identity_seed: Some(seed),
+            contacts_db_path: Some(db_path),
+            replay_store_path: None,
+            delivery_store_path: None,
+            forward_store_path: None,
+            inbox_store_path: None,
+            inbox_storage_key: None,
+        })
         .unwrap();
 
         let contacts = restarted.contacts();
@@ -1402,20 +1448,20 @@ mod tests {
         // Step 1: Alice discovers Bob (identity only -- no live Bob process needed for
         // discovery itself) and it gets persisted.
         {
-            let alice1 = MeshClient::new(
-                "Alice".to_string(),
-                "127.0.0.1:0".to_string(),
-                vec![],
-                "test-channel".to_string(),
-                8,
-                Some(alice_seed.clone()),
-                Some(alice_contacts_path.clone()),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
+            let alice1 = MeshClient::new(MeshClientConfig {
+                display_name: "Alice".to_string(),
+                listen_addr: "127.0.0.1:0".to_string(),
+                peer_addrs: vec![],
+                channel_passphrase: "test-channel".to_string(),
+                ttl: 8,
+                identity_seed: Some(alice_seed.clone()),
+                contacts_db_path: Some(alice_contacts_path.clone()),
+                replay_store_path: None,
+                delivery_store_path: None,
+                forward_store_path: None,
+                inbox_store_path: None,
+                inbox_storage_key: None,
+            })
             .unwrap();
             {
                 let mut contacts = alice1.contacts.lock().unwrap();
@@ -1431,20 +1477,20 @@ mod tests {
         // using only the persisted contact, no rediscovery involved.
         let alice_node_id: mesh_core::NodeId;
         {
-            let alice2 = MeshClient::new(
-                "Alice".to_string(),
-                "127.0.0.1:0".to_string(),
-                vec![],
-                "test-channel".to_string(),
-                8,
-                Some(alice_seed.clone()),
-                Some(alice_contacts_path.clone()),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
+            let alice2 = MeshClient::new(MeshClientConfig {
+                display_name: "Alice".to_string(),
+                listen_addr: "127.0.0.1:0".to_string(),
+                peer_addrs: vec![],
+                channel_passphrase: "test-channel".to_string(),
+                ttl: 8,
+                identity_seed: Some(alice_seed.clone()),
+                contacts_db_path: Some(alice_contacts_path.clone()),
+                replay_store_path: None,
+                delivery_store_path: None,
+                forward_store_path: None,
+                inbox_store_path: None,
+                inbox_storage_key: None,
+            })
             .unwrap();
             alice_node_id = hex_decode::<32>(&alice2.full_node_id()).unwrap();
             assert_eq!(alice2.contacts().len(), 1, "Bob's identity should have survived Alice's restart");
@@ -1473,20 +1519,20 @@ mod tests {
         // above except the same identity seed) and the captured bytes are delivered
         // to it directly -- simulating a relay/store-and-forward hop handing them over
         // late, exactly the scenario a future DTN design must support.
-        let bob2 = MeshClient::new(
-            "Bob".to_string(),
-            "127.0.0.1:0".to_string(),
-            vec![],
-            "test-channel".to_string(),
-            8,
-            Some(bob_identity.seed().to_vec()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let bob2 = MeshClient::new(MeshClientConfig {
+            display_name: "Bob".to_string(),
+            listen_addr: "127.0.0.1:0".to_string(),
+            peer_addrs: vec![],
+            channel_passphrase: "test-channel".to_string(),
+            ttl: 8,
+            identity_seed: Some(bob_identity.seed().to_vec()),
+            contacts_db_path: None,
+            replay_store_path: None,
+            delivery_store_path: None,
+            forward_store_path: None,
+            inbox_store_path: None,
+            inbox_storage_key: None,
+        })
         .unwrap();
 
         let event = bob2
@@ -1532,20 +1578,20 @@ mod tests {
         capture_socket.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
         let bob_address = capture_socket.local_addr().unwrap();
 
-        let alice = MeshClient::new(
-            "Alice".to_string(),
-            "127.0.0.1:0".to_string(),
-            vec![],
-            "test-channel".to_string(),
-            8,
-            Some(alice_seed),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let alice = MeshClient::new(MeshClientConfig {
+            display_name: "Alice".to_string(),
+            listen_addr: "127.0.0.1:0".to_string(),
+            peer_addrs: vec![],
+            channel_passphrase: "test-channel".to_string(),
+            ttl: 8,
+            identity_seed: Some(alice_seed),
+            contacts_db_path: None,
+            replay_store_path: None,
+            delivery_store_path: None,
+            forward_store_path: None,
+            inbox_store_path: None,
+            inbox_storage_key: None,
+        })
         .unwrap();
         {
             let mut contacts = alice.contacts.lock().unwrap();
@@ -1562,20 +1608,20 @@ mod tests {
 
         // Bob (first launch): the captured packet is delivered once and accepted.
         {
-            let bob1 = MeshClient::new(
-                "Bob".to_string(),
-                "127.0.0.1:0".to_string(),
-                vec![],
-                "test-channel".to_string(),
-                8,
-                Some(bob_seed.clone()),
-                None,
-                Some(bob_replay_path.clone()),
-                None,
-                None,
-                None,
-                None,
-            )
+            let bob1 = MeshClient::new(MeshClientConfig {
+                display_name: "Bob".to_string(),
+                listen_addr: "127.0.0.1:0".to_string(),
+                peer_addrs: vec![],
+                channel_passphrase: "test-channel".to_string(),
+                ttl: 8,
+                identity_seed: Some(bob_seed.clone()),
+                contacts_db_path: None,
+                replay_store_path: Some(bob_replay_path.clone()),
+                delivery_store_path: None,
+                forward_store_path: None,
+                inbox_store_path: None,
+                inbox_storage_key: None,
+            })
             .unwrap();
             let event = bob1.runtime.block_on(bob1.node.handle_incoming(captured.clone())).unwrap();
             match &event {
@@ -1591,20 +1637,20 @@ mod tests {
         }
 
         // Bob restarts: same identity, same `replay_store_path`.
-        let bob2 = MeshClient::new(
-            "Bob".to_string(),
-            "127.0.0.1:0".to_string(),
-            vec![],
-            "test-channel".to_string(),
-            8,
-            Some(bob_seed),
-            None,
-            Some(bob_replay_path),
-            None,
-            None,
-            None,
-            None,
-        )
+        let bob2 = MeshClient::new(MeshClientConfig {
+            display_name: "Bob".to_string(),
+            listen_addr: "127.0.0.1:0".to_string(),
+            peer_addrs: vec![],
+            channel_passphrase: "test-channel".to_string(),
+            ttl: 8,
+            identity_seed: Some(bob_seed),
+            contacts_db_path: None,
+            replay_store_path: Some(bob_replay_path),
+            delivery_store_path: None,
+            forward_store_path: None,
+            inbox_store_path: None,
+            inbox_storage_key: None,
+        })
         .unwrap();
 
         // The exact same captured bytes, replayed after the restart, must be rejected.
@@ -1619,20 +1665,20 @@ mod tests {
     /// `TooLongForReliableText` explicitly, and nothing may be transmitted at all.
     #[test]
     fn send_reports_too_long_explicitly_instead_of_silently_falling_back() {
-        let alice = MeshClient::new(
-            "Alice".to_string(),
-            "127.0.0.1:0".to_string(),
-            vec![],
-            "test-channel".to_string(),
-            8,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let alice = MeshClient::new(MeshClientConfig {
+            display_name: "Alice".to_string(),
+            listen_addr: "127.0.0.1:0".to_string(),
+            peer_addrs: vec![],
+            channel_passphrase: "test-channel".to_string(),
+            ttl: 8,
+            identity_seed: None,
+            contacts_db_path: None,
+            replay_store_path: None,
+            delivery_store_path: None,
+            forward_store_path: None,
+            inbox_store_path: None,
+            inbox_storage_key: None,
+        })
         .unwrap();
         let bob_identity = Identity::generate();
         {
@@ -1659,37 +1705,37 @@ mod tests {
         let bob_seed = Identity::generate().seed().to_vec();
         let bob_inbox_storage_key = vec![0x11u8; 32];
 
-        let alice = MeshClient::new(
-            "Alice".to_string(),
-            "127.0.0.1:0".to_string(),
-            vec![],
-            "test-channel".to_string(),
-            8,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let alice = MeshClient::new(MeshClientConfig {
+            display_name: "Alice".to_string(),
+            listen_addr: "127.0.0.1:0".to_string(),
+            peer_addrs: vec![],
+            channel_passphrase: "test-channel".to_string(),
+            ttl: 8,
+            identity_seed: None,
+            contacts_db_path: None,
+            replay_store_path: None,
+            delivery_store_path: None,
+            forward_store_path: None,
+            inbox_store_path: None,
+            inbox_storage_key: None,
+        })
         .unwrap();
 
         {
-            let bob = MeshClient::new(
-                "Bob".to_string(),
-                "127.0.0.1:0".to_string(),
-                vec![],
-                "test-channel".to_string(),
-                8,
-                Some(bob_seed.clone()),
-                None,
-                None,
-                None,
-                None,
-                Some(bob_inbox_path.clone()),
-                Some(bob_inbox_storage_key.clone()),
-            )
+            let bob = MeshClient::new(MeshClientConfig {
+                display_name: "Bob".to_string(),
+                listen_addr: "127.0.0.1:0".to_string(),
+                peer_addrs: vec![],
+                channel_passphrase: "test-channel".to_string(),
+                ttl: 8,
+                identity_seed: Some(bob_seed.clone()),
+                contacts_db_path: None,
+                replay_store_path: None,
+                delivery_store_path: None,
+                forward_store_path: None,
+                inbox_store_path: Some(bob_inbox_path.clone()),
+                inbox_storage_key: Some(bob_inbox_storage_key.clone()),
+            })
             .unwrap();
             {
                 let mut contacts = alice.contacts.lock().unwrap();
@@ -1714,20 +1760,20 @@ mod tests {
             // `bob` dropped here -- simulating the app being killed.
         }
 
-        let bob_restarted = MeshClient::new(
-            "Bob".to_string(),
-            "127.0.0.1:0".to_string(),
-            vec![],
-            "test-channel".to_string(),
-            8,
-            Some(bob_seed),
-            None,
-            None,
-            None,
-            None,
-            Some(bob_inbox_path),
-            Some(bob_inbox_storage_key),
-        )
+        let bob_restarted = MeshClient::new(MeshClientConfig {
+            display_name: "Bob".to_string(),
+            listen_addr: "127.0.0.1:0".to_string(),
+            peer_addrs: vec![],
+            channel_passphrase: "test-channel".to_string(),
+            ttl: 8,
+            identity_seed: Some(bob_seed),
+            contacts_db_path: None,
+            replay_store_path: None,
+            delivery_store_path: None,
+            forward_store_path: None,
+            inbox_store_path: Some(bob_inbox_path),
+            inbox_storage_key: Some(bob_inbox_storage_key),
+        })
         .unwrap();
 
         let history = bob_restarted.chat_history();

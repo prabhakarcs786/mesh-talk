@@ -1,6 +1,7 @@
 package com.meshtalk.app
 
 import android.app.Application
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -22,6 +23,7 @@ import uniffi.mesh_mobile.ContactIdentity
 import uniffi.mesh_mobile.DiscoveredPeer
 import uniffi.mesh_mobile.FileAttachment
 import uniffi.mesh_mobile.MeshClient
+import uniffi.mesh_mobile.MeshClientConfig
 import uniffi.mesh_mobile.ReceivedMessage
 import uniffi.mesh_mobile.SendOutcome
 import uniffi.mesh_mobile.TransferProgressUpdate
@@ -186,19 +188,27 @@ class MeshStore(application: Application) : AndroidViewModel(application) {
         disconnect()
         try {
             val context = getApplication<Application>()
+            // Bundled into a single MeshClientConfig record (rather than one
+            // constructor parameter per field) to work around a known, unresolved
+            // upstream uniffi-rs/JNA bug that corrupts many-struct-by-value native
+            // calls specifically on Android ARM64 -- see the doc comment on
+            // MeshClientConfig in crates/mesh-mobile/src/lib.rs, and
+            // https://github.com/mozilla/uniffi-rs/issues/2624.
             val newClient = MeshClient(
-                displayName = displayName,
-                listenAddr = "0.0.0.0:$listenPort",
-                peerAddrs = emptyList(),
-                channelPassphrase = channel,
-                ttl = 16u,
-                identitySeed = IdentityStore.loadSeed(context),
-                contactsDbPath = contactsDbPath(),
-                replayStorePath = replayStorePath(),
-                deliveryStorePath = deliveryStorePath(),
-                forwardStorePath = forwardStorePath(),
-                inboxStorePath = inboxStorePath(),
-                inboxStorageKey = IdentityStore.loadStorageKey(context),
+                MeshClientConfig(
+                    displayName = displayName,
+                    listenAddr = "0.0.0.0:$listenPort",
+                    peerAddrs = emptyList(),
+                    channelPassphrase = channel,
+                    ttl = 16u,
+                    identitySeed = IdentityStore.loadSeed(context),
+                    contactsDbPath = contactsDbPath(),
+                    replayStorePath = replayStorePath(),
+                    deliveryStorePath = deliveryStorePath(),
+                    forwardStorePath = forwardStorePath(),
+                    inboxStorePath = inboxStorePath(),
+                    inboxStorageKey = IdentityStore.loadStorageKey(context),
+                )
             )
             // Persist the seed regardless of whether it was just generated (first
             // launch) or reused (every launch after) -- keeps this device's NodeId
@@ -232,6 +242,7 @@ class MeshStore(application: Application) : AndroidViewModel(application) {
             startPolling()
             startDiscoveryPolling()
         } catch (e: Exception) {
+            Log.e("MeshStore", "start() failed", e)
             lastError = e.message ?: e.toString()
             isConnected = false
         }
