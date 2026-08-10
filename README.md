@@ -70,6 +70,17 @@ crates/
 | iOS app | Runs in the iOS Simulator -- conversation list, per-contact chat threads, and voice/video calling all verified live via screenshots on two simulators talking to each other |
 | Android app | Builds and genuinely links the engine, with UI mirroring the iOS app (conversation list, per-contact threads, calling); not yet run on an emulator/device |
 
+## Download
+
+Prebuilt apps live in [`releases/`](releases/) -- no build toolchain required to try them.
+
+| Platform | File | Install |
+|---|---|---|
+| Android | [`releases/meshtalk-android-debug.apk`](releases/meshtalk-android-debug.apk) | Download to your phone and open it (you'll need to allow "install unknown apps" for your browser/file manager once). This is a debug build, not signed for the Play Store. |
+| iOS | [`releases/meshtalk-ios-simulator.zip`](releases/meshtalk-ios-simulator.zip) | **Simulator only.** Unzip, then drag `MeshTalk.app` onto a running iOS Simulator window (or `xcrun simctl install booted MeshTalk.app`). This build is unsigned, so it will **not** install on a real iPhone -- Apple requires a paid Developer account + code-signing certificate for that, which this project doesn't have set up. To run on a real device, build from source with your own Apple ID in Xcode (`ios/project.yml` + `scripts/build-ios.sh device`). |
+
+Rebuild either one yourself with `scripts/build-android.sh` / `scripts/build-ios.sh` -- see each script's header comment for prerequisites.
+
 ## Try the relay demo (3 nodes, no real radios needed)
 
 This simulates three people in a line, 1 hop apart, where the two end nodes are **not**
